@@ -1,23 +1,48 @@
 const WebSocket = require('ws');
-const config = require('../config');
+const { getSettings } = require('../settings');
 
-const PING_INTERVAL_MS = 25 * 1000; // 客户端心跳
-const STALE_CHECK_INTERVAL_MS = 30 * 1000; // 活性检查周期
-const STALE_TIMEOUT_MS = 90 * 1000; // 超过该时长无任何数据则判定连接已死
+const PING_INTERVAL_MS = 25 * 1000;
+const STALE_CHECK_INTERVAL_MS = 30 * 1000;
+const STALE_TIMEOUT_MS = 90 * 1000;
 const MAX_RECONNECT_DELAY_MS = 30 * 1000;
 
+async function fetchTicket(wechat) {
+  if (!wechat.token) throw new Error('未配置 WeChatPadPro Cloud Access Token');
+  const url = `${wechat.apiBase}${wechat.ticketPath}`;
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: {
+      'X-Cloud-Access-Token': wechat.token,
+      'Content-Type': 'application/json',
+    },
+    body: '{}',
+  });
+
+  const text = await res.text();
+  let body;
+  try {
+    body = JSON.parse(text);
+  } catch {
+    throw new Error(`换票接口返回非 JSON（HTTP ${res.status}）：${text.slice(0, 200)}`);
+  }
+
+  if (!res.ok || !body.Success || !body.Data || !body.Data.ticket) {
+    throw new Error(`换票失败（HTTP ${res.status}）：${text.slice(0, 300)}`);
+  }
+  return { ticket: body.Data.ticket, expiresIn: body.Data.expires_in };
+}
+
 class WeChatPadProClient {
-  /**
-   * @param {(msg: object, raw: object) => void} onMessage 收到单条消息
-   * @param {() => void} onReady 实时通道就绪（收到 connection_ready）
-   */
   constructor({ onMessage, onReady } = {}) {
     this.onMessage = onMessage || (() => {});
     this.onReady = onReady || (() => {});
     this.ws = null;
-    this.stopped = false;
+    this.stopped = true;
+    this.state = 'stopped';
+    this.generation = 0;
     this.reconnectAttempts = 0;
     this.lastSeenAt = 0;
+    this.lastReadyAt = 0;
     this.pingTimer = null;
     this.staleTimer = null;
     this.reconnectTimer = null;
@@ -25,84 +50,99 @@ class WeChatPadProClient {
 
   async start() {
     this.stopped = false;
+    const { wechat } = getSettings();
+    if (!wechat.token) {
+      this.state = 'not_configured';
+      console.warn('[wechatpadpro] 未配置 Access Token，请在 Web 管理页完成接入设置');
+      return;
+    }
     await this.connect();
   }
 
   stop() {
     this.stopped = true;
+    this.state = 'stopped';
+    this.generation += 1;
     this.clearTimers();
-    if (this.ws) {
+    const ws = this.ws;
+    this.ws = null;
+    if (ws) {
       try {
-        this.ws.close(1000, 'client shutdown');
+        ws.close(1000, 'client shutdown');
       } catch {
         // 忽略关闭异常
       }
     }
   }
 
-  async fetchTicket() {
-    const url = `${config.apiBase}${config.ticketPath}`;
-    const res = await fetch(url, {
-      method: 'POST',
-      headers: {
-        'X-Cloud-Access-Token': config.token,
-        'Content-Type': 'application/json',
-      },
-      body: '{}',
-    });
+  async restart() {
+    this.stop();
+    this.reconnectAttempts = 0;
+    await this.start();
+  }
 
-    const text = await res.text();
-    let body;
-    try {
-      body = JSON.parse(text);
-    } catch {
-      throw new Error(`换票接口返回非 JSON（HTTP ${res.status}）：${text.slice(0, 200)}`);
-    }
-
-    if (!res.ok || !body.Success || !body.Data || !body.Data.ticket) {
-      throw new Error(`换票失败（HTTP ${res.status}）：${text.slice(0, 300)}`);
-    }
-    return { ticket: body.Data.ticket, expiresIn: body.Data.expires_in };
+  getStatus() {
+    return {
+      state: this.state,
+      reconnectAttempts: this.reconnectAttempts,
+      lastSeenAt: this.lastSeenAt || null,
+      lastReadyAt: this.lastReadyAt || null,
+    };
   }
 
   async connect() {
+    const generation = ++this.generation;
     this.clearTimers();
+    const { wechat } = getSettings();
+    if (!wechat.token) {
+      this.state = 'not_configured';
+      return;
+    }
+    this.state = this.reconnectAttempts ? 'reconnecting' : 'connecting';
     let ticket;
     try {
-      ({ ticket } = await this.fetchTicket());
+      ({ ticket } = await fetchTicket(wechat));
     } catch (err) {
+      if (generation !== this.generation || this.stopped) return;
       console.error(`[wechatpadpro] 获取票据失败：${err.message}`);
       this.scheduleReconnect();
       return;
     }
+    if (generation !== this.generation || this.stopped) return;
 
-    const url = `${config.wsUrl}?ticket=${encodeURIComponent(ticket)}`;
+    const url = `${wechat.wsUrl}?ticket=${encodeURIComponent(ticket)}`;
     console.log('[wechatpadpro] 正在建立 WebSocket 连接…');
     const ws = new WebSocket(url);
     this.ws = ws;
 
     ws.on('open', () => {
+      if (generation !== this.generation) return;
       console.log('[wechatpadpro] WebSocket 已连接，等待实时通道就绪…');
+      this.state = 'connected';
       this.lastSeenAt = Date.now();
       this.pingTimer = setInterval(() => {
         if (ws.readyState === WebSocket.OPEN) ws.ping();
       }, PING_INTERVAL_MS);
-      this.staleTimer = setInterval(() => this.checkStale(), STALE_CHECK_INTERVAL_MS);
+      this.staleTimer = setInterval(() => this.checkStale(generation), STALE_CHECK_INTERVAL_MS);
     });
 
-    ws.on('message', (data) => this.handleRaw(data));
+    ws.on('message', (data) => {
+      if (generation === this.generation) this.handleRaw(data);
+    });
     ws.on('pong', () => {
-      this.lastSeenAt = Date.now();
+      if (generation === this.generation) this.lastSeenAt = Date.now();
     });
 
     ws.on('close', (code, reason) => {
+      if (generation !== this.generation) return;
       console.log(`[wechatpadpro] 连接关闭 code=${code} reason=${reason || '(无)'}`);
+      this.ws = null;
+      this.state = 'offline';
       if (!this.stopped) this.scheduleReconnect();
     });
 
     ws.on('error', (err) => {
-      // error 之后必跟随 close，重连逻辑放在 close 里统一处理
-      console.error(`[wechatpadpro] 连接错误：${err.message}`);
+      if (generation === this.generation) console.error(`[wechatpadpro] 连接错误：${err.message}`);
     });
   }
 
@@ -117,14 +157,15 @@ class WeChatPadProClient {
       return;
     }
 
-    if (config.logRawMessage) {
-      console.log('[wechatpadpro] RAW:', text);
-    }
+    const { wechat } = getSettings();
+    if (wechat.logRawMessage) console.log('[wechatpadpro] RAW:', text);
 
     const payload = raw.Data;
     if (payload && payload.type === 'connection_ready') {
       console.log(`[wechatpadpro] ${raw.Message || '实时消息通道已就绪'}`);
       this.reconnectAttempts = 0;
+      this.state = 'online';
+      this.lastReadyAt = Date.now();
       this.onReady();
       return;
     }
@@ -143,14 +184,13 @@ class WeChatPadProClient {
       return;
     }
 
-    // 其他类型的推送（状态同步等），仅在调试模式下可见
-    if (!config.logRawMessage) {
-      console.log('[wechatpadpro] 收到非消息类推送（设 LOG_RAW_MESSAGE=1 可查看原文）');
+    if (!wechat.logRawMessage) {
+      console.log('[wechatpadpro] 收到非消息类推送（可在接入设置中开启原始报文日志）');
     }
   }
 
-  checkStale() {
-    if (this.stopped || !this.ws) return;
+  checkStale(generation) {
+    if (generation !== this.generation || this.stopped || !this.ws) return;
     if (Date.now() - this.lastSeenAt > STALE_TIMEOUT_MS) {
       console.warn('[wechatpadpro] 连接长时间无数据，主动断开并重建…');
       this.ws.terminate();
@@ -158,7 +198,9 @@ class WeChatPadProClient {
   }
 
   scheduleReconnect() {
+    if (this.stopped) return;
     this.clearTimers();
+    const generation = ++this.generation;
     if (this.ws) {
       this.ws.removeAllListeners();
       try {
@@ -168,11 +210,13 @@ class WeChatPadProClient {
       }
       this.ws = null;
     }
-    if (this.stopped) return;
     this.reconnectAttempts += 1;
+    this.state = 'reconnecting';
     const delay = Math.min(MAX_RECONNECT_DELAY_MS, 1000 * 2 ** (this.reconnectAttempts - 1));
     console.log(`[wechatpadpro] ${delay / 1000}s 后进行第 ${this.reconnectAttempts} 次重连…`);
-    this.reconnectTimer = setTimeout(() => this.connect(), delay);
+    this.reconnectTimer = setTimeout(() => {
+      if (generation === this.generation) this.connect();
+    }, delay);
   }
 
   clearTimers() {
@@ -187,3 +231,4 @@ class WeChatPadProClient {
 }
 
 module.exports = WeChatPadProClient;
+module.exports.fetchTicket = fetchTicket;

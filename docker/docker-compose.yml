@@ -1,0 +1,11 @@
+services:
+  crane-answer:
+    image: ${IMAGE:?请在 .env 中配置 IMAGE（镜像完整地址，含版本标签）}
+    container_name: crane-answer
+    restart: always
+    ports:
+      - "${PORT:-3000}:${PORT:-3000}"
+    env_file:
+      - .env
+    volumes:
+      - ./data:/app/data

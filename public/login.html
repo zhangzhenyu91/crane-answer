@@ -1,0 +1,76 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>管理员登录 · 微信群智能应答平台</title>
+<link rel="stylesheet" href="/assets/theme.css">
+<style>
+  body { display: flex; align-items: center; justify-content: center; padding: 32px 16px; }
+  .login { width: min(420px, 100%); }
+  .login-brand { display: flex; align-items: center; justify-content: center; gap: 12px; margin-bottom: 24px; }
+  .login-brand .brand-mark { width: 42px; height: 42px; font-size: 19px; }
+  .login-brand h1 { font-size: 19px; font-weight: 700; }
+  .login-brand p { margin-top: 5px; color: var(--text-3); font-size: 11px; letter-spacing: 1px; }
+  .login-card { padding: 28px 30px 24px; }
+  .login-card h2 { font-size: 17px; font-weight: 600; }
+  .login-card .sub { margin-top: 7px; margin-bottom: 22px; color: var(--text-3); font-size: 12px; }
+  .login-field { margin-bottom: 16px; }
+  .login-field label { display: block; margin-bottom: 7px; color: var(--text-2); font-size: 12px; font-weight: 600; }
+  .login-field .input { height: 44px; }
+  .login-submit { width: 100%; height: 44px; margin-top: 4px; }
+  .login-error { min-height: 20px; margin-top: 12px; color: var(--red); font-size: 12px; line-height: 1.6; text-align: center; }
+  .login-note { margin-top: 18px; color: var(--text-3); font-size: 11px; line-height: 1.7; text-align: center; }
+</style>
+</head>
+<body>
+<main class="login">
+  <div class="login-brand">
+    <span class="brand-mark">群</span>
+    <div><h1>微信群智能应答平台</h1><p>WECHAT MESSAGE AUTOMATION</p></div>
+  </div>
+  <section class="card login-card">
+    <h2>管理员登录</h2>
+    <p class="sub">登录后管理监听规则、发送者别名和接入设置</p>
+    <form id="loginForm">
+      <div class="login-field"><label for="username">管理员账号</label><input class="input" id="username" name="username" autocomplete="username" required autofocus></div>
+      <div class="login-field"><label for="password">管理员密码</label><input class="input" id="password" name="password" type="password" autocomplete="current-password" required></div>
+      <button class="btn btn-primary login-submit" id="loginBtn" type="submit">登 录</button>
+      <div class="login-error" id="loginError" role="alert"></div>
+    </form>
+  </section>
+  <p class="login-note">账号与密码由服务启动环境变量配置<br>登录状态采用 HttpOnly Cookie 保存</p>
+</main>
+<script>
+(function () {
+  var form = document.getElementById('loginForm');
+  var btn = document.getElementById('loginBtn');
+  var error = document.getElementById('loginError');
+  form.addEventListener('submit', async function (event) {
+    event.preventDefault();
+    error.textContent = '';
+    btn.disabled = true;
+    btn.textContent = '登录中…';
+    try {
+      var res = await fetch('/api/auth/login', {
+        method: 'POST',
+        credentials: 'same-origin',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          username: document.getElementById('username').value.trim(),
+          password: document.getElementById('password').value,
+        }),
+      });
+      var body = await res.json().catch(function () { return null; });
+      if (!res.ok || !body || !body.ok) throw new Error(body && body.error ? body.error.message : '登录失败，请稍后重试');
+      window.location.replace('/');
+    } catch (err) {
+      error.textContent = err.message;
+      btn.disabled = false;
+      btn.textContent = '登 录';
+    }
+  });
+})();
+</script>
+</body>
+</html>

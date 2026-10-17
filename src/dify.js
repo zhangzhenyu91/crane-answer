@@ -1,4 +1,4 @@
-const config = require('./config');
+const { getSettings } = require('./settings');
 
 /**
  * 调用 Dify workflow（blocking 模式）。
@@ -7,10 +7,11 @@ const config = require('./config');
  * @returns {Promise<object>} Dify 响应体
  */
 async function runWorkflow(apiKey, inputs) {
+  const { dify } = getSettings();
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), config.difyTimeoutMs);
+  const timer = setTimeout(() => controller.abort(), dify.timeoutMs);
   try {
-    const res = await fetch(`${config.difyApiBase}/workflows/run`, {
+    const res = await fetch(`${dify.apiBase}/workflows/run`, {
       method: 'POST',
       headers: {
         Authorization: `Bearer ${apiKey}`,
@@ -24,7 +25,7 @@ async function runWorkflow(apiKey, inputs) {
           wxid: inputs.wxid || '',
         },
         response_mode: 'blocking',
-        user: config.difyUser,
+        user: dify.user,
       }),
       signal: controller.signal,
     });

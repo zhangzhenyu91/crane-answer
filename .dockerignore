@@ -1,0 +1,10 @@
+.git
+.github
+.kimi-code
+node_modules
+data
+design
+docker
+.env
+*.log
+**/.DS_Store

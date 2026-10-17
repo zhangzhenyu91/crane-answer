@@ -1,14 +1,15 @@
-const config = require('../config');
+const { getSettings } = require('../settings');
 
-const CACHE_TTL_MS = 10 * 60 * 1000; // 群成员缓存 10 分钟
-const groupCache = new Map(); // groupId -> { fetchedAt, members: Map<wxid, displayName> }
+const CACHE_TTL_MS = 10 * 60 * 1000;
+const groupCache = new Map();
 
 async function fetchGroupMembers(groupId) {
-  const url = `${config.apiBase}/v1/Group/GetChatRoomMemberDetail`;
+  const { wechat } = getSettings();
+  const url = `${wechat.apiBase}/v1/Group/GetChatRoomMemberDetail`;
   const res = await fetch(url, {
     method: 'POST',
     headers: {
-      'X-Cloud-Access-Token': config.token,
+      'X-Cloud-Access-Token': wechat.token,
       'Content-Type': 'application/json',
     },
     body: JSON.stringify({ QID: groupId }),
@@ -22,7 +23,6 @@ async function fetchGroupMembers(groupId) {
     throw new Error(`获取群成员失败（HTTP ${res.status}）：${JSON.stringify(body).slice(0, 200)}`);
   }
 
-  // 显示名优先级：群昵称 DisplayName > 微信昵称 NickName
   const map = new Map();
   for (const m of members) {
     if (m.UserName) map.set(m.UserName, m.DisplayName || m.NickName || '');
@@ -41,12 +41,13 @@ async function getGroupMembers(groupId) {
 }
 
 /**
- * 解析发送者显示名：env 映射（SENDER_NAME_MAP）> 群成员接口 > wxid 兜底。
+ * 解析发送者显示名：手动别名 > 群成员接口（群昵称>微信昵称）> wxid 兜底。
  */
 async function resolveDisplayName(groupId, wxid) {
   if (!wxid) return '';
-  const override = config.senderNameMap.get(wxid);
-  if (override) return override;
+  const { aliases } = getSettings();
+  const override = aliases.find((item) => item.wxid === wxid);
+  if (override) return override.name;
   try {
     const members = await getGroupMembers(groupId);
     return members.get(wxid) || wxid;

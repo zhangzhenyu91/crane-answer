@@ -1,4 +1,4 @@
-const config = require('../config');
+const { getSettings } = require('../settings');
 const { resolveDisplayName } = require('./memberResolver');
 const { runWorkflow } = require('../dify');
 
@@ -28,16 +28,16 @@ function formatTime(unixSeconds) {
 /**
  * 位置消息触发：提取发送者与经纬度，调用该群对应的 Dify workflow。
  */
-async function handleLocationTrigger(msg, conversationId, difyApiKey) {
+async function handleLocationTrigger(msg, conversationId, difyApiKey, ruleName) {
   const loc = msg.location || {};
   const senderUsername = msg.sender_id
     || (msg.reply_context && msg.reply_context.from_user_id)
     || loc.from_user_name
     || '';
-  // 推送报文不含昵称：env 映射 > 群成员接口（群昵称>微信昵称）> wxid 兜底
   const senderDisplayName = await resolveDisplayName(conversationId, senderUsername);
 
   const extracted = {
+    ruleName,
     groupId: conversationId,
     senderUsername,
     senderDisplayName,
@@ -73,18 +73,18 @@ function handleMessage(msg) {
 
   console.log(
     `[消息] ${formatTime(msg.created_at)} | ${isGroup ? '群聊' : '私聊'}` +
-    ` | 会话=${conversationId || '-'} | 发送者=${senderId || '-'}` +
+    ` | 会话=${conversationId || '-'} | 发送者=${senderId || '-'} ` +
     ` | 方向=${msg.direction || '-'} | 类型=${msg.kind || '-'} | ${preview}`
   );
 
-  // 仅处理配置了 Dify Key 的监听群
-  const difyApiKey = config.groupDifyKeys.get(conversationId);
-  if (!isGroup || !difyApiKey) return;
-
-  // 触发条件：位置消息（kind=location / type=48）
-  if (msg.kind === 'location' && msg.location) {
-    handleLocationTrigger(msg, conversationId, difyApiKey)
-      .catch((err) => console.error(`[触发] 处理位置消息失败：${err.stack || err}`));
+  if (!isGroup || msg.kind !== 'location' || !msg.location) return;
+  const { rules } = getSettings();
+  for (const rule of rules) {
+    if (!rule.enabled || rule.trigger !== 'location' || rule.action !== 'dify') continue;
+    const group = (rule.groups || []).find((item) => item.groupId === conversationId && item.apiKey);
+    if (!group) continue;
+    handleLocationTrigger(msg, conversationId, group.apiKey, rule.name)
+      .catch((err) => console.error(`[触发] 规则“${rule.name}”处理失败：${err.stack || err}`));
   }
 }
 

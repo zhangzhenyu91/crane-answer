@@ -1,0 +1,1033 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>微信群智能应答平台 · Web 管理页设计稿</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  :root {
+    --blue: #0E3DA8;
+    --blue-dark: #0A3592;
+    --blue-bg: #E8F0FF;
+    --green: #00B42A;
+    --green-bg: #E8FFEA;
+    --green-text: #0B8A37;
+    --orange: #FF7D00;
+    --orange-bg: #FFF7E8;
+    --orange-text: #D25F00;
+    --red: #F53F3F;
+    --red-bg: #FFECE8;
+    --bg: #F5F7FA;
+    --card: #FFFFFF;
+    --fill: #F7F8FA;
+    --text: #1D2129;
+    --text-2: #4E5969;
+    --text-3: #86909C;
+    --line: #E5E6EB;
+    --dash: #C9CDD4;
+    --shadow: 0 2px 8px rgba(0,0,0,.04);
+    --shadow-hover: 0 8px 20px rgba(0,0,0,.08);
+    --ease: cubic-bezier(.22,1,.36,1);
+  }
+  [hidden] { display: none !important; }
+  html { -webkit-text-size-adjust: 100%; }
+  body {
+    min-height: 100vh;
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Helvetica Neue", "Microsoft YaHei", sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+  body.modal-open { overflow: hidden; }
+  button, input, select { font: inherit; }
+  button { color: inherit; }
+  button, a { -webkit-tap-highlight-color: transparent; }
+  svg { display: block; flex: none; }
+  .container { width: min(1180px, calc(100% - 64px)); margin: 0 auto; }
+
+  .topbar {
+    position: sticky;
+    top: 0;
+    z-index: 60;
+    background: #fff;
+    border-bottom: 1px solid var(--line);
+  }
+  .topbar-inner { min-height: 60px; display: flex; align-items: center; gap: 30px; }
+  .brand { display: flex; align-items: center; gap: 10px; flex: none; }
+  .brand-mark {
+    width: 34px;
+    height: 34px;
+    border-radius: 8px;
+    background: var(--blue);
+    color: #fff;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 16px;
+    font-weight: 700;
+  }
+  .brand-name { display: block; font-size: 15px; font-weight: 700; letter-spacing: .5px; white-space: nowrap; }
+  .brand-sub { display: block; margin-top: 2px; color: var(--text-3); font-size: 10px; letter-spacing: .7px; }
+  .prototype-badge {
+    display: inline-flex;
+    align-items: center;
+    height: 20px;
+    margin-left: 4px;
+    padding: 0 6px;
+    border-radius: 4px;
+    background: var(--blue-bg);
+    color: var(--blue);
+    font-size: 10px;
+    font-weight: 600;
+  }
+  .topnav { display: flex; align-self: stretch; gap: 4px; }
+  .nav-item {
+    position: relative;
+    min-width: 88px;
+    padding: 0 14px;
+    border: 0;
+    background: transparent;
+    color: var(--text-2);
+    cursor: pointer;
+    font-size: 13.5px;
+    white-space: nowrap;
+  }
+  .nav-item:hover { color: var(--text); background: var(--fill); }
+  .nav-item.on { color: var(--blue); font-weight: 600; }
+  .nav-item.on::after {
+    content: "";
+    position: absolute;
+    right: 14px;
+    bottom: 0;
+    left: 14px;
+    height: 2px;
+    border-radius: 2px;
+    background: var(--blue);
+  }
+  .topbar-right { margin-left: auto; display: flex; align-items: center; gap: 18px; flex: none; }
+  .channel-status {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    color: var(--green-text);
+    font-size: 12px;
+    white-space: nowrap;
+  }
+  .channel-status::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: var(--green); }
+  .admin { display: flex; align-items: center; gap: 8px; padding-left: 18px; border-left: 1px solid var(--line); }
+  .avatar {
+    width: 32px;
+    height: 32px;
+    border-radius: 50%;
+    background: var(--blue);
+    color: #fff;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 12px;
+    font-weight: 600;
+  }
+  .admin-name { font-size: 12.5px; font-weight: 600; }
+
+  main { padding: 28px 0 36px; }
+  .page-panel { animation: rise .45s var(--ease) both; }
+  .page-head { display: flex; align-items: flex-start; gap: 20px; margin-bottom: 20px; }
+  .page-head h1 { font-size: 22px; line-height: 1.35; font-weight: 700; letter-spacing: .5px; }
+  .page-head p { margin-top: 7px; color: var(--text-2); font-size: 13px; line-height: 1.7; }
+  .page-actions { margin-left: auto; display: flex; gap: 10px; flex: none; }
+
+  .btn {
+    min-height: 38px;
+    padding: 0 16px;
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    background: #fff;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 7px;
+    color: var(--text);
+    cursor: pointer;
+    font-size: 13px;
+    font-weight: 600;
+    transition: border-color .15s, color .15s, background .15s, filter .15s;
+  }
+  .btn:hover { border-color: var(--blue); color: var(--blue); }
+  .btn:focus-visible, .icon-btn:focus-visible, .text-btn:focus-visible, .nav-item:focus-visible, .switch:focus-visible {
+    outline: 3px solid rgba(14,61,168,.16);
+    outline-offset: 2px;
+  }
+  .btn-primary { border-color: var(--blue); background: var(--blue); color: #fff; }
+  .btn-primary:hover { border-color: var(--blue); color: #fff; filter: brightness(.92); }
+  .btn-danger { border-color: var(--red); background: var(--red); color: #fff; }
+  .btn-danger:hover { border-color: var(--red); color: #fff; filter: brightness(.94); }
+  .btn-sm { min-height: 34px; padding: 0 13px; font-size: 12px; }
+  .btn[disabled] { opacity: .55; cursor: not-allowed; filter: none; }
+
+  .info-bar {
+    margin-bottom: 16px;
+    padding: 12px 16px;
+    border-left: 3px solid var(--blue);
+    background: var(--blue-bg);
+    display: flex;
+    align-items: flex-start;
+    gap: 10px;
+    color: var(--text-2);
+    font-size: 12.5px;
+    line-height: 1.7;
+  }
+  .info-bar svg { margin-top: 2px; color: var(--blue); }
+  .info-bar.warn { border-left-color: var(--orange); background: var(--orange-bg); }
+  .info-bar.warn svg { color: var(--orange-text); }
+
+  .card { background: var(--card); border-radius: 12px; box-shadow: var(--shadow); }
+  .table-card { overflow: hidden; }
+  .table-toolbar {
+    min-height: 54px;
+    padding: 0 18px;
+    border-bottom: 1px solid var(--line);
+    display: flex;
+    align-items: center;
+    gap: 12px;
+  }
+  .table-count { color: var(--text-2); font-size: 12.5px; }
+  .table-toolbar .right { margin-left: auto; display: flex; align-items: center; gap: 10px; }
+  .search { position: relative; width: 250px; }
+  .search svg { position: absolute; top: 50%; left: 12px; transform: translateY(-50%); color: var(--text-3); pointer-events: none; }
+  .search .input { height: 36px; padding-left: 36px; background: var(--fill); }
+  .table-wrap { overflow-x: auto; }
+  table { width: 100%; border-collapse: collapse; }
+  .rules-table { min-width: 960px; }
+  .alias-table { min-width: 680px; }
+  th, td { padding: 14px 18px; border-bottom: 1px solid var(--line); text-align: left; font-size: 12.5px; vertical-align: middle; }
+  th { background: var(--fill); color: var(--text-2); font-size: 11.5px; font-weight: 600; letter-spacing: .8px; white-space: nowrap; }
+  tbody tr:last-child td { border-bottom: 0; }
+  tbody tr { transition: background .15s; }
+  tbody tr:hover { background: #FAFBFC; }
+  .rule-name { display: flex; align-items: center; gap: 8px; font-size: 13.5px; font-weight: 600; }
+  .cell-main { color: var(--text); font-weight: 500; }
+  .cell-sub { margin-top: 5px; color: var(--text-3); font-size: 11.5px; line-height: 1.5; }
+  .mono { font-family: Menlo, Consolas, monospace; font-size: 12px; }
+  .group-chips { display: flex; flex-wrap: wrap; gap: 5px; max-width: 250px; }
+  .group-chip { padding: 3px 7px; border-radius: 4px; background: var(--fill); color: var(--text-2); font-size: 11px; }
+  .tag {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    min-height: 22px;
+    padding: 2px 8px;
+    border-radius: 4px;
+    font-size: 10.5px;
+    font-weight: 600;
+    white-space: nowrap;
+  }
+  .tag-blue { background: var(--blue-bg); color: var(--blue); }
+  .tag-green { background: var(--green-bg); color: var(--green-text); }
+  .tag-gray { background: var(--fill); color: var(--text-2); }
+  .tag-orange { background: var(--orange-bg); color: var(--orange-text); }
+  .status-dot::before { content: ""; width: 5px; height: 5px; border-radius: 50%; background: currentColor; }
+  .actions { display: flex; align-items: center; gap: 2px; white-space: nowrap; }
+  .text-btn {
+    min-height: 30px;
+    padding: 0 7px;
+    border: 0;
+    border-radius: 6px;
+    background: transparent;
+    color: var(--text-2);
+    cursor: pointer;
+    font-size: 12px;
+  }
+  .text-btn:hover { background: var(--blue-bg); color: var(--blue); }
+  .text-btn.primary { color: var(--blue); }
+  .text-btn.danger:hover { background: var(--red-bg); color: var(--red); }
+  .switch {
+    position: relative;
+    width: 40px;
+    height: 22px;
+    padding: 0;
+    border: 0;
+    border-radius: 11px;
+    background: var(--dash);
+    cursor: pointer;
+    transition: background .2s;
+    vertical-align: middle;
+  }
+  .switch::after {
+    content: "";
+    position: absolute;
+    top: 3px;
+    left: 3px;
+    width: 16px;
+    height: 16px;
+    border-radius: 50%;
+    background: #fff;
+    box-shadow: 0 1px 4px rgba(0,0,0,.12);
+    transition: transform .2s var(--ease);
+  }
+  .switch.on { background: var(--blue); }
+  .switch.on::after { transform: translateX(18px); }
+  .switch-line { display: inline-flex; align-items: center; gap: 8px; }
+  .switch-label { color: var(--text-2); font-size: 12px; }
+  .empty { padding: 58px 20px; text-align: center; color: var(--text-3); }
+  .empty-icon { width: 48px; height: 48px; margin: 0 auto 12px; border-radius: 12px; background: var(--fill); display: flex; align-items: center; justify-content: center; color: var(--dash); }
+  .empty p { font-size: 12.5px; }
+
+  .settings-form { display: grid; gap: 16px; }
+  .settings-card { padding: 22px 24px; }
+  .card-head { display: flex; align-items: flex-start; gap: 12px; margin-bottom: 20px; }
+  .card-icon { width: 40px; height: 40px; border-radius: 10px; background: var(--blue-bg); color: var(--blue); display: flex; align-items: center; justify-content: center; }
+  .card-title { font-size: 15.5px; font-weight: 600; }
+  .card-desc { margin-top: 5px; color: var(--text-3); font-size: 12px; line-height: 1.6; }
+  .card-head .head-action { margin-left: auto; flex: none; }
+  .form-grid { display: grid; grid-template-columns: repeat(2, minmax(0,1fr)); gap: 16px 20px; }
+  .form-field { min-width: 0; }
+  .form-field.full { grid-column: 1 / -1; }
+  .form-field label, .field-label { display: flex; align-items: center; gap: 6px; margin-bottom: 7px; color: var(--text-2); font-size: 12px; font-weight: 600; }
+  .required { color: var(--red); }
+  .field-hint { margin-top: 6px; color: var(--text-3); font-size: 11px; line-height: 1.6; }
+  .input {
+    width: 100%;
+    height: 40px;
+    padding: 0 12px;
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    outline: 0;
+    background: #fff;
+    color: var(--text);
+    font-size: 13px;
+    transition: border-color .15s, box-shadow .15s;
+  }
+  .input::placeholder { color: var(--text-3); }
+  .input:focus { border-color: var(--blue); box-shadow: 0 0 0 3px rgba(14,61,168,.12); }
+  select.input { cursor: pointer; }
+  .input-with-status { position: relative; }
+  .input-with-status .input { padding-right: 74px; }
+  .configured { position: absolute; top: 50%; right: 11px; transform: translateY(-50%); color: var(--green-text); font-size: 11px; }
+  .setting-row { display: flex; align-items: flex-start; gap: 18px; }
+  .setting-row .switch { margin-top: 2px; flex: none; }
+  .setting-row h4 { font-size: 13px; font-weight: 600; }
+  .setting-row p { margin-top: 6px; color: var(--text-3); font-size: 11.5px; line-height: 1.7; }
+  .save-bar {
+    position: sticky;
+    bottom: 16px;
+    z-index: 10;
+    padding: 14px 18px;
+    border: 1px solid var(--line);
+    border-radius: 12px;
+    background: rgba(255,255,255,.96);
+    box-shadow: var(--shadow-hover);
+    display: flex;
+    align-items: center;
+    gap: 12px;
+  }
+  .save-bar span { color: var(--text-3); font-size: 11.5px; line-height: 1.6; }
+  .save-bar .btn { margin-left: auto; }
+
+  .mask {
+    position: fixed;
+    inset: 0;
+    z-index: 200;
+    padding: 24px;
+    background: rgba(29,33,41,.45);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .modal {
+    width: min(780px, 100%);
+    max-height: calc(100vh - 48px);
+    border: 1px solid var(--line);
+    border-radius: 12px;
+    background: #fff;
+    box-shadow: var(--shadow-hover);
+    display: flex;
+    flex-direction: column;
+    animation: rise .3s var(--ease) both;
+  }
+  .modal-sm { width: min(440px, 100%); }
+  .modal-head { padding: 18px 22px; border-bottom: 1px solid var(--line); display: flex; align-items: center; gap: 12px; }
+  .modal-head h2 { font-size: 16px; font-weight: 600; }
+  .modal-head p { margin-top: 4px; color: var(--text-3); font-size: 11.5px; }
+  .icon-btn {
+    width: 32px;
+    height: 32px;
+    padding: 0;
+    border: 0;
+    border-radius: 8px;
+    background: transparent;
+    color: var(--text-3);
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+  }
+  .icon-btn:hover { background: var(--fill); color: var(--text); }
+  .modal-close { margin-left: auto; }
+  .modal-body { padding: 20px 22px; overflow-y: auto; }
+  .modal-footer { padding: 14px 22px; border-top: 1px solid var(--line); display: flex; justify-content: flex-end; gap: 10px; }
+  .form-section + .form-section { margin-top: 24px; padding-top: 22px; border-top: 1px solid var(--line); }
+  .section-head { display: flex; align-items: center; gap: 10px; margin-bottom: 14px; }
+  .section-head h3 { font-size: 14px; font-weight: 600; }
+  .section-head span { color: var(--text-3); font-size: 11px; }
+  .section-head .btn { margin-left: auto; }
+  .basic-grid { display: grid; grid-template-columns: 1fr 180px; gap: 20px; align-items: end; }
+  .switch-field { height: 40px; display: flex; align-items: center; gap: 10px; }
+  .group-list { display: grid; gap: 10px; }
+  .group-item { padding: 14px; border: 1px solid var(--line); border-radius: 8px; background: var(--fill); }
+  .group-item-head { display: flex; align-items: center; gap: 8px; margin-bottom: 12px; }
+  .group-item-head strong { font-size: 12.5px; font-weight: 600; }
+  .group-item-head .icon-btn { width: 26px; height: 26px; margin-left: auto; color: var(--text-3); }
+  .group-item-head .icon-btn:hover { background: var(--red-bg); color: var(--red); }
+  .group-fields { display: grid; grid-template-columns: .85fr 1.25fr 1.2fr; gap: 12px; }
+  .group-fields .form-field label { font-size: 11px; }
+  .group-fields .input { background: #fff; font-size: 12px; }
+  .mapping { display: grid; grid-template-columns: repeat(4,minmax(0,1fr)); gap: 8px; }
+  .mapping-item { padding: 10px; border-radius: 8px; background: var(--fill); }
+  .mapping-item code { color: var(--blue); font-family: Menlo, Consolas, monospace; font-size: 11.5px; font-weight: 600; }
+  .mapping-item p { margin-top: 5px; color: var(--text-3); font-size: 10.5px; line-height: 1.5; }
+  .confirm-icon { width: 46px; height: 46px; margin-bottom: 16px; border-radius: 12px; background: var(--red-bg); color: var(--red); display: flex; align-items: center; justify-content: center; }
+  .confirm-text { color: var(--text-2); font-size: 13px; line-height: 1.8; }
+  .confirm-text strong { color: var(--text); }
+
+  .toast-wrap { position: fixed; top: 20px; left: 50%; z-index: 400; transform: translateX(-50%); display: grid; gap: 8px; pointer-events: none; }
+  .toast {
+    min-width: 220px;
+    max-width: min(440px, calc(100vw - 32px));
+    padding: 11px 16px;
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    background: #fff;
+    box-shadow: var(--shadow-hover);
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    color: var(--text);
+    font-size: 12.5px;
+    animation: toastIn .25s var(--ease) both;
+  }
+  .toast.success svg { color: var(--green); }
+  .toast.info svg { color: var(--blue); }
+  .toast.error svg { color: var(--red); }
+  .footer { padding: 0 0 24px; color: var(--text-3); text-align: center; font-size: 10.5px; line-height: 1.8; letter-spacing: .5px; }
+
+  @keyframes rise { from { opacity: 0; transform: translateY(14px); } to { opacity: 1; transform: none; } }
+  @keyframes toastIn { from { opacity: 0; transform: translateY(-10px); } to { opacity: 1; transform: none; } }
+
+  @media (max-width: 960px) {
+    .topbar-inner { gap: 16px; }
+    .brand-sub { display: none; }
+    .topbar-right { gap: 12px; }
+    .admin { padding-left: 12px; }
+    .admin-name { display: none; }
+    .group-fields { grid-template-columns: 1fr 1fr; }
+    .group-fields .form-field:last-child { grid-column: 1 / -1; }
+  }
+  @media (max-width: 720px) {
+    .container { width: calc(100% - 32px); }
+    .topbar-inner { min-height: 52px; flex-wrap: wrap; gap: 0 12px; }
+    .brand { height: 52px; }
+    .brand-mark { width: 30px; height: 30px; font-size: 14px; }
+    .brand-name { font-size: 13.5px; }
+    .prototype-badge { display: none; }
+    .topbar-right { height: 52px; }
+    .channel-status .status-text { display: none; }
+    .admin { border-left: 0; padding-left: 2px; }
+    .avatar { width: 29px; height: 29px; }
+    .topnav { order: 3; width: 100%; height: 42px; overflow-x: auto; }
+    .nav-item { min-width: auto; flex: 1; padding: 0 12px; }
+    main { padding-top: 22px; }
+    .page-head { align-items: flex-start; }
+    .page-head h1 { font-size: 20px; }
+    .page-head p { font-size: 12px; }
+    .page-actions .btn { min-height: 36px; padding: 0 12px; }
+    .table-toolbar { padding: 10px 14px; flex-wrap: wrap; }
+    .table-toolbar .right { width: 100%; margin-left: 0; }
+    .search { width: 100%; }
+    .form-grid, .basic-grid { grid-template-columns: 1fr; }
+    .settings-card { padding: 18px; }
+    .card-head { display: grid; grid-template-columns: 40px minmax(0,1fr); gap: 12px; }
+    .card-head .head-action { grid-column: 2; margin-left: 0; justify-self: start; }
+    .mapping { grid-template-columns: repeat(2,minmax(0,1fr)); }
+    .mask { padding: 12px; }
+    .modal { max-height: calc(100vh - 24px); }
+    .modal-head, .modal-body, .modal-footer { padding-right: 16px; padding-left: 16px; }
+    .group-fields { grid-template-columns: 1fr; }
+    .group-fields .form-field:last-child { grid-column: auto; }
+    .save-bar { bottom: 8px; }
+  }
+  @media (max-width: 480px) {
+    .page-head { display: block; }
+    .page-actions { margin: 14px 0 0; }
+    .page-actions .btn { width: 100%; }
+    .save-bar span { display: none; }
+    .save-bar .btn { width: 100%; margin-left: 0; }
+    .modal-footer .btn { flex: 1; }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after { animation: none !important; transition: none !important; }
+  }
+</style>
+</head>
+<body>
+<header class="topbar">
+  <div class="container topbar-inner">
+    <div class="brand">
+      <span class="brand-mark">群</span>
+      <div>
+        <span class="brand-name">微信群智能应答平台<span class="prototype-badge">设计稿</span></span>
+        <span class="brand-sub">WECHAT MESSAGE AUTOMATION</span>
+      </div>
+    </div>
+    <nav class="topnav" aria-label="管理导航">
+      <button class="nav-item on" data-page="rules" aria-current="page">监听规则</button>
+      <button class="nav-item" data-page="aliases">发送者别名</button>
+      <button class="nav-item" data-page="settings">接入设置</button>
+    </nav>
+    <div class="topbar-right">
+      <span class="channel-status"><span class="status-text">实时通道正常</span></span>
+      <div class="admin"><span class="avatar">管</span><span class="admin-name">系统管理员</span></div>
+    </div>
+  </div>
+</header>
+
+<main class="container">
+  <section class="page-panel" id="page-rules">
+    <div class="page-head">
+      <div>
+        <h1>监听规则</h1>
+        <p>按规则匹配微信群消息，提取所需信息并调用 Dify 工作流。</p>
+      </div>
+      <div class="page-actions"><button class="btn btn-primary" id="addRuleBtn" type="button"><span data-icon="add"></span>新建规则</button></div>
+    </div>
+    <div class="info-bar"><span data-icon="info"></span><span>规则保存后即时生效。每个监听群可独立配置 Dify API Key；未配置 Key 的群仅接收消息，不会触发工作流。</span></div>
+    <div class="card table-card">
+      <div class="table-toolbar"><span class="table-count" id="ruleCount"></span><div class="right"><button class="btn btn-sm" id="refreshRulesBtn" type="button"><span data-icon="refresh"></span>刷新</button></div></div>
+      <div class="table-wrap">
+        <table class="rules-table">
+          <thead><tr><th>规则名称</th><th>监听群</th><th>触发条件</th><th>执行动作</th><th>状态</th><th>操作</th></tr></thead>
+          <tbody id="ruleTableBody"></tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+
+  <section class="page-panel" id="page-aliases" hidden>
+    <div class="page-head">
+      <div>
+        <h1>发送者别名</h1>
+        <p>为 wxid 设置固定显示名，作为调用 Dify 工作流时的发送者昵称。</p>
+      </div>
+      <div class="page-actions"><button class="btn btn-primary" id="addAliasBtn" type="button"><span data-icon="add"></span>新增别名</button></div>
+    </div>
+    <div class="info-bar"><span data-icon="info"></span><span>显示名优先级：手动别名 ＞ 群成员接口自动解析（群昵称 ＞ 微信昵称）＞ wxid 兜底。</span></div>
+    <div class="card table-card">
+      <div class="table-toolbar">
+        <span class="table-count" id="aliasCount"></span>
+        <div class="right"><div class="search"><span data-icon="search"></span><input class="input" id="aliasSearch" placeholder="搜索 wxid / 显示名" autocomplete="off"></div></div>
+      </div>
+      <div class="table-wrap">
+        <table class="alias-table">
+          <thead><tr><th>wxid</th><th>显示名</th><th>操作</th></tr></thead>
+          <tbody id="aliasTableBody"></tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+
+  <section class="page-panel" id="page-settings" hidden>
+    <div class="page-head">
+      <div>
+        <h1>接入设置</h1>
+        <p>集中管理消息通道、Dify 工作流和运行调试参数。</p>
+      </div>
+    </div>
+    <div class="settings-form">
+      <section class="card settings-card">
+        <div class="card-head">
+          <span class="card-icon" data-icon="message"></span>
+          <div><h2 class="card-title">WeChatPadPro 消息通道</h2><p class="card-desc">修改连接参数并保存后，服务将自动获取新票据并重连。</p></div>
+          <button class="btn btn-sm head-action" id="testConnectionBtn" type="button"><span data-icon="link"></span>测试连接</button>
+        </div>
+        <div class="form-grid">
+          <div class="form-field full">
+            <label for="wppToken">Cloud Access Token <span class="required">*</span></label>
+            <div class="input-with-status"><input class="input" id="wppToken" type="password" placeholder="留空则保持已保存的 Token" autocomplete="new-password"><span class="configured">已配置</span></div>
+            <p class="field-hint">完整密钥不会回显到浏览器；重新输入即可替换。</p>
+          </div>
+          <div class="form-field">
+            <label for="wppApiBase">API Base</label>
+            <input class="input" id="wppApiBase" value="https://api.wechatpadpro.com" autocomplete="off">
+          </div>
+          <div class="form-field">
+            <label for="wppTicketPath">换票接口路径</label>
+            <input class="input mono" id="wppTicketPath" value="/cloud/v1/Runtime/WebSocketTicket" autocomplete="off">
+          </div>
+          <div class="form-field full">
+            <label for="wppWsUrl">WebSocket 地址</label>
+            <input class="input" id="wppWsUrl" value="wss://api.wechatpadpro.com/ws/sync" autocomplete="off">
+            <p class="field-hint">仅填写握手地址，不包含 ticket 查询参数。</p>
+          </div>
+        </div>
+      </section>
+
+      <section class="card settings-card">
+        <div class="card-head">
+          <span class="card-icon" data-icon="workflow"></span>
+          <div><h2 class="card-title">Dify 工作流</h2><p class="card-desc">以下为所有规则共用参数，各监听群的 API Key 在规则内单独配置。</p></div>
+        </div>
+        <div class="form-grid">
+          <div class="form-field full">
+            <label for="difyApiBase">API Base</label>
+            <input class="input" id="difyApiBase" value="https://ai.example.com/v1" autocomplete="off">
+          </div>
+          <div class="form-field">
+            <label for="difyUser">Workflow User 标识</label>
+            <input class="input" id="difyUser" value="demo_operator" autocomplete="off">
+          </div>
+          <div class="form-field">
+            <label for="difyTimeout">调用超时（毫秒）</label>
+            <input class="input" id="difyTimeout" type="number" min="1000" step="1000" value="60000">
+            <p class="field-hint">blocking 模式需等待工作流执行完成，建议 1000–300000。</p>
+          </div>
+        </div>
+      </section>
+
+      <section class="card settings-card">
+        <div class="card-head">
+          <span class="card-icon" data-icon="debug"></span>
+          <div><h2 class="card-title">运行调试</h2><p class="card-desc">用于连接排查与报文分析，日常运行建议保持关闭。</p></div>
+        </div>
+        <div class="setting-row">
+          <button class="switch" id="rawLogSwitch" type="button" role="switch" aria-checked="false" aria-label="原始推送报文日志"></button>
+          <div><h4>打印原始推送报文</h4><p>开启后在服务端日志中输出每条原始推送。报文可能包含群成员、消息内容等敏感信息，请勿长期开启。</p></div>
+        </div>
+      </section>
+
+      <div class="save-bar"><span>接入参数保存后自动重连，其余设置即时生效，无需重启服务。</span><button class="btn btn-primary" id="saveSettingsBtn" type="button"><span data-icon="save"></span>保存设置</button></div>
+    </div>
+  </section>
+</main>
+
+<footer class="container footer">WEB 管理页高保真设计稿 · 所有数据均为虚构演示<br>当前交互不会读取或写入真实配置</footer>
+
+<div class="mask" id="ruleMask" hidden>
+  <section class="modal" role="dialog" aria-modal="true" aria-labelledby="ruleModalTitle">
+    <div class="modal-head">
+      <div><h2 id="ruleModalTitle">新建监听规则</h2><p>设置监听群、触发条件及要执行的 Dify 工作流。</p></div>
+      <button class="icon-btn modal-close" data-close="ruleMask" type="button" aria-label="关闭"><span data-icon="close"></span></button>
+    </div>
+    <div class="modal-body">
+      <section class="form-section">
+        <div class="section-head"><h3>基本信息</h3><span>用于区分不同业务监听场景</span></div>
+        <div class="basic-grid">
+          <div class="form-field"><label for="ruleName">规则名称 <span class="required">*</span></label><input class="input" id="ruleName" maxlength="40" placeholder="如：吊车群监听" autocomplete="off"></div>
+          <div class="form-field"><span class="field-label">启用状态</span><div class="switch-field"><button class="switch on" id="ruleEnabledSwitch" type="button" role="switch" aria-checked="true"></button><span class="switch-label" id="ruleEnabledText">启用</span></div></div>
+        </div>
+      </section>
+      <section class="form-section">
+        <div class="section-head"><h3>监听群配置</h3><span>群 ID 与 Key 一一对应</span><button class="btn btn-sm" id="addGroupBtn" type="button"><span data-icon="add"></span>添加监听群</button></div>
+        <div class="group-list" id="groupList"></div>
+      </section>
+      <section class="form-section">
+        <div class="section-head"><h3>触发条件</h3><span>本期保持现有位置消息触发能力</span></div>
+        <div class="form-grid">
+          <div class="form-field full"><label for="ruleTrigger">消息类型</label><select class="input" id="ruleTrigger"><option value="location">位置消息（kind=location）</option></select><p class="field-hint">仅当群成员发送有效位置消息时触发，自动提取经纬度、位置名称和发送者信息。</p></div>
+        </div>
+      </section>
+      <section class="form-section">
+        <div class="section-head"><h3>执行动作</h3><span>输入参数自动映射，无需手动编排</span></div>
+        <div class="form-field" style="margin-bottom:14px"><label for="ruleAction">动作类型</label><select class="input" id="ruleAction"><option value="dify">调用 Dify Workflow（blocking）</option></select></div>
+        <div class="mapping">
+          <div class="mapping-item"><code>lng</code><p>位置消息 longitude</p></div>
+          <div class="mapping-item"><code>lat</code><p>位置消息 latitude</p></div>
+          <div class="mapping-item"><code>nickname</code><p>别名或自动解析昵称</p></div>
+          <div class="mapping-item"><code>wxid</code><p>发送者微信 wxid</p></div>
+        </div>
+      </section>
+    </div>
+    <div class="modal-footer"><button class="btn" data-close="ruleMask" type="button">取消</button><button class="btn btn-primary" id="saveRuleBtn" type="button">保存规则</button></div>
+  </section>
+</div>
+
+<div class="mask" id="aliasMask" hidden>
+  <section class="modal modal-sm" role="dialog" aria-modal="true" aria-labelledby="aliasModalTitle">
+    <div class="modal-head"><h2 id="aliasModalTitle">新增发送者别名</h2><button class="icon-btn modal-close" data-close="aliasMask" type="button" aria-label="关闭"><span data-icon="close"></span></button></div>
+    <div class="modal-body">
+      <div class="form-field" style="margin-bottom:16px"><label for="aliasWxid">发送者 wxid <span class="required">*</span></label><input class="input mono" id="aliasWxid" placeholder="如：wxid_demo_operator01" autocomplete="off"></div>
+      <div class="form-field"><label for="aliasName">显示名 <span class="required">*</span></label><input class="input" id="aliasName" maxlength="30" placeholder="如：张师傅" autocomplete="off"><p class="field-hint">保存后优先于群昵称和微信昵称。</p></div>
+    </div>
+    <div class="modal-footer"><button class="btn" data-close="aliasMask" type="button">取消</button><button class="btn btn-primary" id="saveAliasBtn" type="button">保存别名</button></div>
+  </section>
+</div>
+
+<div class="mask" id="confirmMask" hidden>
+  <section class="modal modal-sm" role="alertdialog" aria-modal="true" aria-labelledby="confirmTitle">
+    <div class="modal-head"><h2 id="confirmTitle">确认删除</h2><button class="icon-btn modal-close" data-close="confirmMask" type="button" aria-label="关闭"><span data-icon="close"></span></button></div>
+    <div class="modal-body"><div class="confirm-icon" data-icon="warning"></div><p class="confirm-text" id="confirmText"></p></div>
+    <div class="modal-footer"><button class="btn" data-close="confirmMask" type="button">取消</button><button class="btn btn-danger" id="confirmDeleteBtn" type="button">确认删除</button></div>
+  </section>
+</div>
+
+<div class="toast-wrap" id="toastWrap" aria-live="polite"></div>
+
+<script>
+(function () {
+  'use strict';
+
+  var icons = {
+    add: '<path d="M12 5v14M5 12h14"/>',
+    refresh: '<path d="M20 6v5h-5"/><path d="M18.2 16.5a8 8 0 1 1 1.1-7.8L20 11"/>',
+    info: '<circle cx="12" cy="12" r="9"/><path d="M12 11v6M12 7.2v.2"/>',
+    search: '<circle cx="10.8" cy="10.8" r="6.8"/><path d="m16 16 4.2 4.2"/>',
+    message: '<path d="M20 11.5a8 8 0 0 1-11.7 7.1L3.5 20l1.5-4.3A8 8 0 1 1 20 11.5z"/><path d="M8 10h8M8 13.5h5"/>',
+    workflow: '<rect x="3" y="3" width="6" height="6" rx="1.5"/><rect x="15" y="15" width="6" height="6" rx="1.5"/><path d="M9 6h4a4 4 0 0 1 4 4v5M15 18h-4a4 4 0 0 1-4-4V9"/>',
+    link: '<path d="m10 14 4-4"/><path d="M7.5 16.5 6 18a3.5 3.5 0 0 1-5-5l3-3a3.5 3.5 0 0 1 5 0" transform="translate(3 0)"/><path d="m16.5 7.5 1.5-1.5a3.5 3.5 0 0 1 5 5l-3 3a3.5 3.5 0 0 1-5 0" transform="translate(-3 0)"/>',
+    debug: '<path d="M8 9H4v6h4M16 9h4v6h-4M9 4h6l2 5v6l-2 5H9l-2-5V9z"/><path d="M9 12h6M12 4V2M8 5 6 3M16 5l2-2"/>',
+    save: '<path d="M5 3h12l3 3v15H4V3z"/><path d="M8 3v6h8V3M8 21v-7h8v7"/>',
+    close: '<path d="m6 6 12 12M18 6 6 18"/>',
+    warning: '<path d="M10.2 4.1 2.7 17.2A2 2 0 0 0 4.4 20h15.2a2 2 0 0 0 1.7-2.8L13.8 4.1a2 2 0 0 0-3.6 0z"/><path d="M12 9v4M12 17h.01"/>',
+    trash: '<path d="M4 7h16M9 7V4h6v3M7 7l1 14h8l1-14M10 11v6M14 11v6"/>',
+    rules: '<path d="M9 5h11M9 12h11M9 19h11"/><path d="m3 5 1 1 2-2M3 12l1 1 2-2M3 19l1 1 2-2"/>',
+    check: '<circle cx="12" cy="12" r="9"/><path d="m8 12 2.5 2.5L16 9"/>',
+    error: '<circle cx="12" cy="12" r="9"/><path d="M12 7v6M12 17h.01"/>'
+  };
+
+  function icon(name, size) {
+    return '<svg width="' + (size || 16) + '" height="' + (size || 16) + '" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' + (icons[name] || icons.info) + '</svg>';
+  }
+
+  function hydrateIcons(root) {
+    (root || document).querySelectorAll('[data-icon]').forEach(function (el) {
+      el.innerHTML = icon(el.getAttribute('data-icon'), el.getAttribute('data-icon-size') || 16);
+    });
+  }
+
+  function esc(value) {
+    return String(value == null ? '' : value).replace(/[&<>"']/g, function (ch) {
+      return ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[ch];
+    });
+  }
+
+  function clone(value) { return JSON.parse(JSON.stringify(value)); }
+  function $(id) { return document.getElementById(id); }
+
+  var state = {
+    nextRuleId: 3,
+    nextAliasId: 3,
+    editingRuleId: null,
+    editingAliasId: null,
+    editingGroups: [],
+    deleteTarget: null,
+    rules: [
+      {
+        id: 1,
+        name: '吊车群监听',
+        isDefault: true,
+        enabled: true,
+        trigger: 'location',
+        action: 'dify',
+        groups: [
+          { name: '东区吊车协调群', groupId: '100860001@chatroom', hasKey: true },
+          { name: '西区吊装作业群', groupId: '100860002@chatroom', hasKey: true }
+        ]
+      }
+    ],
+    aliases: [
+      { id: 1, wxid: 'wxid_demo_operator01', name: '张师傅' },
+      { id: 2, wxid: 'wxid_demo_operator02', name: '李安全员' }
+    ]
+  };
+
+  function toast(message, type) {
+    var el = document.createElement('div');
+    el.className = 'toast ' + (type || 'success');
+    el.innerHTML = icon(type === 'error' ? 'error' : type === 'info' ? 'info' : 'check', 16) + '<span>' + esc(message) + '</span>';
+    $('toastWrap').appendChild(el);
+    setTimeout(function () { el.remove(); }, 2800);
+  }
+
+  function openMask(id) {
+    $(id).hidden = false;
+    document.body.classList.add('modal-open');
+  }
+
+  function closeMask(id) {
+    $(id).hidden = true;
+    if (!document.querySelector('.mask:not([hidden])')) document.body.classList.remove('modal-open');
+  }
+
+  document.querySelectorAll('[data-close]').forEach(function (btn) {
+    btn.addEventListener('click', function () { closeMask(btn.getAttribute('data-close')); });
+  });
+  document.querySelectorAll('.mask').forEach(function (mask) {
+    mask.addEventListener('mousedown', function (event) {
+      if (event.target === mask) closeMask(mask.id);
+    });
+  });
+  document.addEventListener('keydown', function (event) {
+    if (event.key !== 'Escape') return;
+    var open = document.querySelector('.mask:not([hidden])');
+    if (open) closeMask(open.id);
+  });
+
+  document.querySelectorAll('.nav-item').forEach(function (btn) {
+    btn.addEventListener('click', function () {
+      document.querySelectorAll('.nav-item').forEach(function (item) {
+        item.classList.toggle('on', item === btn);
+        if (item === btn) item.setAttribute('aria-current', 'page');
+        else item.removeAttribute('aria-current');
+      });
+      document.querySelectorAll('.page-panel').forEach(function (panel) {
+        panel.hidden = panel.id !== 'page-' + btn.getAttribute('data-page');
+      });
+    });
+  });
+
+  function renderRules() {
+    var groupTotal = state.rules.reduce(function (sum, rule) { return sum + rule.groups.length; }, 0);
+    $('ruleCount').textContent = '共 ' + state.rules.length + ' 条规则 · ' + groupTotal + ' 个监听群';
+    if (!state.rules.length) {
+      $('ruleTableBody').innerHTML = '<tr><td colspan="6"><div class="empty"><div class="empty-icon">' + icon('rules', 24) + '</div><p>暂无监听规则，点击右上角“新建规则”创建</p></div></td></tr>';
+      return;
+    }
+    $('ruleTableBody').innerHTML = state.rules.map(function (rule) {
+      var chips = rule.groups.slice(0, 2).map(function (group) { return '<span class="group-chip">' + esc(group.name || '未命名群') + '</span>'; }).join('');
+      if (rule.groups.length > 2) chips += '<span class="group-chip">+' + (rule.groups.length - 2) + '</span>';
+      return '<tr>' +
+        '<td><div class="rule-name">' + esc(rule.name) + (rule.isDefault ? '<span class="tag tag-blue">默认规则</span>' : '') + '</div><div class="cell-sub">规则编号 R-' + String(rule.id).padStart(3, '0') + '</div></td>' +
+        '<td><div class="group-chips">' + (chips || '<span class="cell-sub">未配置监听群</span>') + '</div><div class="cell-sub">共 ' + rule.groups.length + ' 个群</div></td>' +
+        '<td><span class="tag tag-blue">位置消息</span><div class="cell-sub mono">kind=location</div></td>' +
+        '<td><span class="cell-main">Dify 工作流</span><div class="cell-sub">blocking 模式</div></td>' +
+        '<td><div class="switch-line"><button class="switch' + (rule.enabled ? ' on' : '') + '" type="button" role="switch" aria-checked="' + rule.enabled + '" aria-label="切换规则状态" data-rule-action="toggle" data-id="' + rule.id + '"></button><span class="switch-label">' + (rule.enabled ? '启用' : '停用') + '</span></div></td>' +
+        '<td><div class="actions"><button class="text-btn primary" data-rule-action="edit" data-id="' + rule.id + '" type="button">编辑</button><button class="text-btn" data-rule-action="copy" data-id="' + rule.id + '" type="button">复制</button><button class="text-btn" data-rule-action="toggle" data-id="' + rule.id + '" type="button">' + (rule.enabled ? '停用' : '启用') + '</button><button class="text-btn danger" data-rule-action="delete" data-id="' + rule.id + '" type="button">删除</button></div></td>' +
+      '</tr>';
+    }).join('');
+  }
+
+  function renderGroupEditor() {
+    if (!state.editingGroups.length) {
+      $('groupList').innerHTML = '<div class="empty" style="padding:24px"><p>尚未添加监听群，请点击右上角“添加监听群”</p></div>';
+      return;
+    }
+    $('groupList').innerHTML = state.editingGroups.map(function (group, index) {
+      return '<div class="group-item" data-group-index="' + index + '">' +
+        '<div class="group-item-head"><strong>监听群 ' + (index + 1) + '</strong>' + (group.hasKey ? '<span class="tag tag-green status-dot">Key 已配置</span>': '<span class="tag tag-orange">待配置 Key</span>') + '<button class="icon-btn" type="button" data-remove-group="' + index + '" aria-label="删除监听群">' + icon('trash', 14) + '</button></div>' +
+        '<div class="group-fields">' +
+          '<div class="form-field"><label>群备注 <span class="required">*</span></label><input class="input" data-group-field="name" value="' + esc(group.name) + '" placeholder="如：东区吊车协调群" autocomplete="off"></div>' +
+          '<div class="form-field"><label>群 ID <span class="required">*</span></label><input class="input mono" data-group-field="groupId" value="' + esc(group.groupId) + '" placeholder="如：100860001@chatroom" autocomplete="off"></div>' +
+          '<div class="form-field"><label>Dify API Key <span class="required">*</span></label><input class="input" type="password" data-group-field="key" value="' + esc(group.key || '') + '" placeholder="' + (group.hasKey ? '留空则保持已保存 Key' : '请输入 app-xxxxxxxx') + '" autocomplete="new-password"></div>' +
+        '</div>' +
+      '</div>';
+    }).join('');
+  }
+
+  function openRuleEditor(rule) {
+    state.editingRuleId = rule ? rule.id : null;
+    state.editingGroups = rule ? clone(rule.groups) : [{ name: '', groupId: '', hasKey: false, key: '' }];
+    $('ruleModalTitle').textContent = rule ? '编辑监听规则' : '新建监听规则';
+    $('ruleName').value = rule ? rule.name : '';
+    $('ruleEnabledSwitch').classList.toggle('on', rule ? rule.enabled : true);
+    $('ruleEnabledSwitch').setAttribute('aria-checked', rule ? String(rule.enabled) : 'true');
+    $('ruleEnabledText').textContent = (rule ? rule.enabled : true) ? '启用' : '停用';
+    renderGroupEditor();
+    openMask('ruleMask');
+    setTimeout(function () { $('ruleName').focus(); }, 50);
+  }
+
+  $('addRuleBtn').addEventListener('click', function () { openRuleEditor(null); });
+  $('refreshRulesBtn').addEventListener('click', function () { renderRules(); toast('规则列表已刷新（演示）', 'info'); });
+  $('ruleEnabledSwitch').addEventListener('click', function () {
+    var on = !this.classList.contains('on');
+    this.classList.toggle('on', on);
+    this.setAttribute('aria-checked', String(on));
+    $('ruleEnabledText').textContent = on ? '启用' : '停用';
+  });
+  $('addGroupBtn').addEventListener('click', function () {
+    state.editingGroups.push({ name: '', groupId: '', hasKey: false, key: '' });
+    renderGroupEditor();
+    var items = $('groupList').querySelectorAll('.group-item');
+    var last = items[items.length - 1];
+    if (last) last.querySelector('input').focus();
+  });
+  $('groupList').addEventListener('click', function (event) {
+    var btn = event.target.closest('[data-remove-group]');
+    if (!btn) return;
+    state.editingGroups.splice(Number(btn.getAttribute('data-remove-group')), 1);
+    renderGroupEditor();
+  });
+  $('groupList').addEventListener('input', function (event) {
+    var input = event.target.closest('[data-group-field]');
+    if (!input) return;
+    var item = input.closest('[data-group-index]');
+    var group = state.editingGroups[Number(item.getAttribute('data-group-index'))];
+    var field = input.getAttribute('data-group-field');
+    group[field] = input.value;
+  });
+
+  $('ruleTableBody').addEventListener('click', function (event) {
+    var btn = event.target.closest('[data-rule-action]');
+    if (!btn) return;
+    var id = Number(btn.getAttribute('data-id'));
+    var rule = state.rules.find(function (item) { return item.id === id; });
+    if (!rule) return;
+    var action = btn.getAttribute('data-rule-action');
+    if (action === 'edit') openRuleEditor(rule);
+    if (action === 'toggle') {
+      rule.enabled = !rule.enabled;
+      renderRules();
+      toast('规则“' + rule.name + '”已' + (rule.enabled ? '启用' : '停用') + '（演示）');
+    }
+    if (action === 'copy') {
+      var copy = clone(rule);
+      copy.id = state.nextRuleId++;
+      copy.name = rule.name + '（副本）';
+      copy.isDefault = false;
+      copy.enabled = false;
+      state.rules.push(copy);
+      renderRules();
+      toast('已复制规则，副本默认停用（演示）');
+    }
+    if (action === 'delete') {
+      state.deleteTarget = { type: 'rule', id: id };
+      $('confirmText').innerHTML = '确定删除规则 <strong>“' + esc(rule.name) + '”</strong> 吗？删除后该规则下的 ' + rule.groups.length + ' 个监听群将不再触发此工作流。此操作不可恢复。';
+      openMask('confirmMask');
+    }
+  });
+
+  $('saveRuleBtn').addEventListener('click', function () {
+    var name = $('ruleName').value.trim();
+    if (!name) { toast('请输入规则名称', 'error'); $('ruleName').focus(); return; }
+    if (!state.editingGroups.length) { toast('请至少添加一个监听群', 'error'); return; }
+    for (var i = 0; i < state.editingGroups.length; i++) {
+      var group = state.editingGroups[i];
+      if (!group.name.trim() || !group.groupId.trim()) {
+        toast('请完整填写监听群 ' + (i + 1) + ' 的备注和群 ID', 'error');
+        return;
+      }
+      if (!group.hasKey && !(group.key || '').trim()) {
+        toast('请填写监听群 ' + (i + 1) + ' 的 Dify API Key', 'error');
+        return;
+      }
+    }
+    var groups = state.editingGroups.map(function (group) {
+      return { name: group.name.trim(), groupId: group.groupId.trim(), hasKey: group.hasKey || !!(group.key || '').trim() };
+    });
+    var existing = state.rules.find(function (rule) { return rule.id === state.editingRuleId; });
+    if (existing) {
+      existing.name = name;
+      existing.groups = groups;
+      existing.enabled = $('ruleEnabledSwitch').classList.contains('on');
+    } else {
+      state.rules.push({
+        id: state.nextRuleId++,
+        name: name,
+        isDefault: false,
+        enabled: $('ruleEnabledSwitch').classList.contains('on'),
+        trigger: 'location',
+        action: 'dify',
+        groups: groups
+      });
+    }
+    closeMask('ruleMask');
+    renderRules();
+    toast(existing ? '规则已保存（演示）' : '规则已创建（演示）');
+  });
+
+  function renderAliases() {
+    var keyword = $('aliasSearch').value.trim().toLowerCase();
+    var list = state.aliases.filter(function (item) {
+      return !keyword || item.wxid.toLowerCase().indexOf(keyword) >= 0 || item.name.toLowerCase().indexOf(keyword) >= 0;
+    });
+    $('aliasCount').textContent = keyword ? '找到 ' + list.length + ' 条匹配记录' : '共 ' + state.aliases.length + ' 条别名';
+    if (!list.length) {
+      $('aliasTableBody').innerHTML = '<tr><td colspan="3"><div class="empty"><div class="empty-icon">' + icon('search', 24) + '</div><p>' + (keyword ? '没有匹配的发送者别名' : '暂无发送者别名') + '</p></div></td></tr>';
+      return;
+    }
+    $('aliasTableBody').innerHTML = list.map(function (item) {
+      return '<tr><td class="mono">' + esc(item.wxid) + '</td><td><span class="cell-main">' + esc(item.name) + '</span></td><td><div class="actions"><button class="text-btn primary" data-alias-action="edit" data-id="' + item.id + '" type="button">编辑</button><button class="text-btn danger" data-alias-action="delete" data-id="' + item.id + '" type="button">删除</button></div></td></tr>';
+    }).join('');
+  }
+
+  function openAliasEditor(item) {
+    state.editingAliasId = item ? item.id : null;
+    $('aliasModalTitle').textContent = item ? '编辑发送者别名' : '新增发送者别名';
+    $('aliasWxid').value = item ? item.wxid : '';
+    $('aliasName').value = item ? item.name : '';
+    openMask('aliasMask');
+    setTimeout(function () { (item ? $('aliasName') : $('aliasWxid')).focus(); }, 50);
+  }
+
+  $('addAliasBtn').addEventListener('click', function () { openAliasEditor(null); });
+  $('aliasSearch').addEventListener('input', renderAliases);
+  $('aliasTableBody').addEventListener('click', function (event) {
+    var btn = event.target.closest('[data-alias-action]');
+    if (!btn) return;
+    var id = Number(btn.getAttribute('data-id'));
+    var item = state.aliases.find(function (alias) { return alias.id === id; });
+    if (!item) return;
+    if (btn.getAttribute('data-alias-action') === 'edit') openAliasEditor(item);
+    else {
+      state.deleteTarget = { type: 'alias', id: id };
+      $('confirmText').innerHTML = '确定删除 <strong>“' + esc(item.name) + '”</strong> 的手动别名吗？删除后将恢复为群成员接口自动解析显示名。';
+      openMask('confirmMask');
+    }
+  });
+  $('saveAliasBtn').addEventListener('click', function () {
+    var wxid = $('aliasWxid').value.trim();
+    var name = $('aliasName').value.trim();
+    if (!wxid || !name) { toast('请完整填写 wxid 和显示名', 'error'); return; }
+    var duplicate = state.aliases.find(function (item) { return item.wxid === wxid && item.id !== state.editingAliasId; });
+    if (duplicate) { toast('该 wxid 已设置别名，请直接编辑原记录', 'error'); return; }
+    var existing = state.aliases.find(function (item) { return item.id === state.editingAliasId; });
+    if (existing) { existing.wxid = wxid; existing.name = name; }
+    else state.aliases.push({ id: state.nextAliasId++, wxid: wxid, name: name });
+    closeMask('aliasMask');
+    renderAliases();
+    toast(existing ? '别名已更新（演示）' : '别名已新增（演示）');
+  });
+
+  $('confirmDeleteBtn').addEventListener('click', function () {
+    if (!state.deleteTarget) return;
+    var target = state.deleteTarget;
+    if (target.type === 'rule') state.rules = state.rules.filter(function (item) { return item.id !== target.id; });
+    if (target.type === 'alias') state.aliases = state.aliases.filter(function (item) { return item.id !== target.id; });
+    state.deleteTarget = null;
+    closeMask('confirmMask');
+    renderRules();
+    renderAliases();
+    toast('已删除（演示）');
+  });
+
+  $('rawLogSwitch').addEventListener('click', function () {
+    var on = !this.classList.contains('on');
+    this.classList.toggle('on', on);
+    this.setAttribute('aria-checked', String(on));
+    toast(on ? '已开启原始报文日志（演示）' : '已关闭原始报文日志（演示）', 'info');
+  });
+  $('testConnectionBtn').addEventListener('click', function () {
+    var btn = this;
+    btn.disabled = true;
+    setTimeout(function () {
+      btn.disabled = false;
+      toast('设计稿：连接测试交互演示', 'info');
+    }, 700);
+  });
+  $('saveSettingsBtn').addEventListener('click', function () {
+    var timeout = Number($('difyTimeout').value);
+    if (!Number.isFinite(timeout) || timeout < 1000 || timeout > 300000) {
+      toast('Dify 调用超时应在 1000–300000 毫秒之间', 'error');
+      $('difyTimeout').focus();
+      return;
+    }
+    toast('接入设置已保存（演示）');
+  });
+
+  hydrateIcons();
+  document.querySelectorAll('.confirm-icon').forEach(function (el) { el.innerHTML = icon('warning', 24); });
+  renderRules();
+  renderAliases();
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,213 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>微信群智能应答平台 · 管理端</title>
+<link rel="stylesheet" href="/assets/theme.css">
+</head>
+<body>
+<header class="topbar">
+  <div class="container topbar-inner">
+    <div class="brand">
+      <span class="brand-mark">群</span>
+      <div>
+        <span class="brand-name">微信群智能应答平台</span>
+        <span class="brand-sub">WECHAT MESSAGE AUTOMATION</span>
+      </div>
+    </div>
+    <nav class="topnav" aria-label="管理导航">
+      <button class="nav-item on" data-page="rules" aria-current="page">监听规则</button>
+      <button class="nav-item" data-page="aliases">发送者别名</button>
+      <button class="nav-item" data-page="settings">接入设置</button>
+    </nav>
+    <div class="topbar-right">
+      <span class="channel-status" id="channelStatus"><span class="status-text" id="channelStatusText">正在获取通道状态</span></span>
+      <div class="admin"><span class="avatar">管</span><span class="admin-name" id="adminName">系统管理员</span><button class="text-btn" id="logoutBtn" type="button">退出</button></div>
+    </div>
+  </div>
+</header>
+
+<main class="container">
+  <section class="page-panel" id="page-rules">
+    <div class="page-head">
+      <div>
+        <h1>监听规则</h1>
+        <p>按规则匹配微信群消息，提取所需信息并调用 Dify 工作流。</p>
+      </div>
+      <div class="page-actions"><button class="btn btn-primary" id="addRuleBtn" type="button"><span data-icon="add"></span>新建规则</button></div>
+    </div>
+    <div class="info-bar"><span data-icon="info"></span><span>规则保存后即时生效。每个监听群可独立配置 Dify API Key；未配置 Key 的群仅接收消息，不会触发工作流。</span></div>
+    <div class="card table-card">
+      <div class="table-toolbar"><span class="table-count" id="ruleCount"></span><div class="right"><button class="btn btn-sm" id="refreshRulesBtn" type="button"><span data-icon="refresh"></span>刷新</button></div></div>
+      <div class="table-wrap">
+        <table class="rules-table">
+          <thead><tr><th>规则名称</th><th>监听群</th><th>触发条件</th><th>执行动作</th><th>状态</th><th>操作</th></tr></thead>
+          <tbody id="ruleTableBody"></tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+
+  <section class="page-panel" id="page-aliases" hidden>
+    <div class="page-head">
+      <div>
+        <h1>发送者别名</h1>
+        <p>为 wxid 设置固定显示名，作为调用 Dify 工作流时的发送者昵称。</p>
+      </div>
+      <div class="page-actions"><button class="btn btn-primary" id="addAliasBtn" type="button"><span data-icon="add"></span>新增别名</button></div>
+    </div>
+    <div class="info-bar"><span data-icon="info"></span><span>显示名优先级：手动别名 ＞ 群成员接口自动解析（群昵称 ＞ 微信昵称）＞ wxid 兜底。</span></div>
+    <div class="card table-card">
+      <div class="table-toolbar">
+        <span class="table-count" id="aliasCount"></span>
+        <div class="right"><div class="search"><span data-icon="search"></span><input class="input" id="aliasSearch" placeholder="搜索 wxid / 显示名" autocomplete="off"></div></div>
+      </div>
+      <div class="table-wrap">
+        <table class="alias-table">
+          <thead><tr><th>wxid</th><th>显示名</th><th>操作</th></tr></thead>
+          <tbody id="aliasTableBody"></tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+
+  <section class="page-panel" id="page-settings" hidden>
+    <div class="page-head">
+      <div>
+        <h1>接入设置</h1>
+        <p>集中管理消息通道、Dify 工作流和运行调试参数。</p>
+      </div>
+    </div>
+    <div class="settings-form">
+      <section class="card settings-card">
+        <div class="card-head">
+          <span class="card-icon" data-icon="message"></span>
+          <div><h2 class="card-title">WeChatPadPro 消息通道</h2><p class="card-desc">修改连接参数并保存后，服务将自动获取新票据并重连。</p></div>
+          <button class="btn btn-sm head-action" id="testConnectionBtn" type="button"><span data-icon="link"></span>测试连接</button>
+        </div>
+        <div class="form-grid">
+          <div class="form-field full">
+            <label for="wppToken">Cloud Access Token <span class="required">*</span></label>
+            <div class="input-with-status"><input class="input" id="wppToken" type="password" placeholder="留空则保持已保存的 Token" autocomplete="new-password"><span class="configured" id="tokenConfigured" hidden>已配置</span></div>
+            <p class="field-hint">完整密钥不会回显到浏览器；重新输入即可替换。</p>
+          </div>
+          <div class="form-field">
+            <label for="wppApiBase">API Base</label>
+            <input class="input" id="wppApiBase" value="https://api.wechatpadpro.com" autocomplete="off">
+          </div>
+          <div class="form-field">
+            <label for="wppTicketPath">换票接口路径</label>
+            <input class="input mono" id="wppTicketPath" value="/cloud/v1/Runtime/WebSocketTicket" autocomplete="off">
+          </div>
+          <div class="form-field full">
+            <label for="wppWsUrl">WebSocket 地址</label>
+            <input class="input" id="wppWsUrl" value="wss://api.wechatpadpro.com/ws/sync" autocomplete="off">
+            <p class="field-hint">仅填写握手地址，不包含 ticket 查询参数。</p>
+          </div>
+        </div>
+      </section>
+
+      <section class="card settings-card">
+        <div class="card-head">
+          <span class="card-icon" data-icon="workflow"></span>
+          <div><h2 class="card-title">Dify 工作流</h2><p class="card-desc">以下为所有规则共用参数，各监听群的 API Key 在规则内单独配置。</p></div>
+        </div>
+        <div class="form-grid">
+          <div class="form-field full">
+            <label for="difyApiBase">API Base</label>
+            <input class="input" id="difyApiBase" value="https://ai.example.com/v1" autocomplete="off">
+          </div>
+          <div class="form-field">
+            <label for="difyUser">Workflow User 标识</label>
+            <input class="input" id="difyUser" value="demo_operator" autocomplete="off">
+          </div>
+          <div class="form-field">
+            <label for="difyTimeout">调用超时（毫秒）</label>
+            <input class="input" id="difyTimeout" type="number" min="1000" step="1000" value="60000">
+            <p class="field-hint">blocking 模式需等待工作流执行完成，建议 1000–300000。</p>
+          </div>
+        </div>
+      </section>
+
+      <section class="card settings-card">
+        <div class="card-head">
+          <span class="card-icon" data-icon="debug"></span>
+          <div><h2 class="card-title">运行调试</h2><p class="card-desc">用于连接排查与报文分析，日常运行建议保持关闭。</p></div>
+        </div>
+        <div class="setting-row">
+          <button class="switch" id="rawLogSwitch" type="button" role="switch" aria-checked="false" aria-label="原始推送报文日志"></button>
+          <div><h4>打印原始推送报文</h4><p>开启后在服务端日志中输出每条原始推送。报文可能包含群成员、消息内容等敏感信息，请勿长期开启。</p></div>
+        </div>
+      </section>
+
+      <div class="save-bar"><span>接入参数保存后自动重连，其余设置即时生效，无需重启服务。</span><button class="btn btn-primary" id="saveSettingsBtn" type="button"><span data-icon="save"></span>保存设置</button></div>
+    </div>
+  </section>
+</main>
+
+<footer class="container footer">微信群智能应答平台 · Web 管理端</footer>
+
+<div class="mask" id="ruleMask" hidden>
+  <section class="modal" role="dialog" aria-modal="true" aria-labelledby="ruleModalTitle">
+    <div class="modal-head">
+      <div><h2 id="ruleModalTitle">新建监听规则</h2><p>设置监听群、触发条件及要执行的 Dify 工作流。</p></div>
+      <button class="icon-btn modal-close" data-close="ruleMask" type="button" aria-label="关闭"><span data-icon="close"></span></button>
+    </div>
+    <div class="modal-body">
+      <section class="form-section">
+        <div class="section-head"><h3>基本信息</h3><span>用于区分不同业务监听场景</span></div>
+        <div class="basic-grid">
+          <div class="form-field"><label for="ruleName">规则名称 <span class="required">*</span></label><input class="input" id="ruleName" maxlength="40" placeholder="如：吊车群监听" autocomplete="off"></div>
+          <div class="form-field"><span class="field-label">启用状态</span><div class="switch-field"><button class="switch on" id="ruleEnabledSwitch" type="button" role="switch" aria-checked="true"></button><span class="switch-label" id="ruleEnabledText">启用</span></div></div>
+        </div>
+      </section>
+      <section class="form-section">
+        <div class="section-head"><h3>监听群配置</h3><span>群 ID 与 Key 一一对应</span><button class="btn btn-sm" id="addGroupBtn" type="button"><span data-icon="add"></span>添加监听群</button></div>
+        <div class="group-list" id="groupList"></div>
+      </section>
+      <section class="form-section">
+        <div class="section-head"><h3>触发条件</h3><span>本期保持现有位置消息触发能力</span></div>
+        <div class="form-grid">
+          <div class="form-field full"><label for="ruleTrigger">消息类型</label><select class="input" id="ruleTrigger"><option value="location">位置消息（kind=location）</option></select><p class="field-hint">仅当群成员发送有效位置消息时触发，自动提取经纬度、位置名称和发送者信息。</p></div>
+        </div>
+      </section>
+      <section class="form-section">
+        <div class="section-head"><h3>执行动作</h3><span>输入参数自动映射，无需手动编排</span></div>
+        <div class="form-field" style="margin-bottom:14px"><label for="ruleAction">动作类型</label><select class="input" id="ruleAction"><option value="dify">调用 Dify Workflow（blocking）</option></select></div>
+        <div class="mapping">
+          <div class="mapping-item"><code>lng</code><p>位置消息 longitude</p></div>
+          <div class="mapping-item"><code>lat</code><p>位置消息 latitude</p></div>
+          <div class="mapping-item"><code>nickname</code><p>别名或自动解析昵称</p></div>
+          <div class="mapping-item"><code>wxid</code><p>发送者微信 wxid</p></div>
+        </div>
+      </section>
+    </div>
+    <div class="modal-footer"><button class="btn" data-close="ruleMask" type="button">取消</button><button class="btn btn-primary" id="saveRuleBtn" type="button">保存规则</button></div>
+  </section>
+</div>
+
+<div class="mask" id="aliasMask" hidden>
+  <section class="modal modal-sm" role="dialog" aria-modal="true" aria-labelledby="aliasModalTitle">
+    <div class="modal-head"><h2 id="aliasModalTitle">新增发送者别名</h2><button class="icon-btn modal-close" data-close="aliasMask" type="button" aria-label="关闭"><span data-icon="close"></span></button></div>
+    <div class="modal-body">
+      <div class="form-field" style="margin-bottom:16px"><label for="aliasWxid">发送者 wxid <span class="required">*</span></label><input class="input mono" id="aliasWxid" placeholder="如：wxid_demo_operator01" autocomplete="off"></div>
+      <div class="form-field"><label for="aliasName">显示名 <span class="required">*</span></label><input class="input" id="aliasName" maxlength="30" placeholder="如：张师傅" autocomplete="off"><p class="field-hint">保存后优先于群昵称和微信昵称。</p></div>
+    </div>
+    <div class="modal-footer"><button class="btn" data-close="aliasMask" type="button">取消</button><button class="btn btn-primary" id="saveAliasBtn" type="button">保存别名</button></div>
+  </section>
+</div>
+
+<div class="mask" id="confirmMask" hidden>
+  <section class="modal modal-sm" role="alertdialog" aria-modal="true" aria-labelledby="confirmTitle">
+    <div class="modal-head"><h2 id="confirmTitle">确认删除</h2><button class="icon-btn modal-close" data-close="confirmMask" type="button" aria-label="关闭"><span data-icon="close"></span></button></div>
+    <div class="modal-body"><div class="confirm-icon" data-icon="warning"></div><p class="confirm-text" id="confirmText"></p></div>
+    <div class="modal-footer"><button class="btn" data-close="confirmMask" type="button">取消</button><button class="btn btn-danger" id="confirmDeleteBtn" type="button">确认删除</button></div>
+  </section>
+</div>
+
+<div class="toast-wrap" id="toastWrap" aria-live="polite"></div>
+
+<script src="/assets/app.js"></script>
+</body>
+</html>

@@ -1,0 +1,22 @@
+# GitHub main 同步到 CNB 后触发：多架构镜像同推 CNB 制品库与腾讯云 TCR。
+# TCR 凭据与命名空间复用同项目密钥仓库；本仓镜像名固定为 crane-answer。
+main:
+  push:
+    - name: 构建并推送服务端镜像
+      services:
+        - docker
+      imports: https://cnb.cool/j1net/j1toolkit/keys/-/blob/main/envs.yml
+      stages:
+        - name: buildx build and push（CNB + TCR）
+          timeout: 30m
+          script: |
+            set -eu
+            TCR_CRANE_IMAGE="$(dirname "${TCR_IMAGE}")/crane-answer"
+            echo "构建提交: ${CNB_COMMIT_SHORT}"
+            echo "TCR 镜像: ${TCR_CRANE_IMAGE}"
+            echo "${TCR_PASSWORD}" | docker login "${TCR_IMAGE%%/*}" -u "${TCR_USERNAME}" --password-stdin
+            docker buildx build --platform linux/amd64,linux/arm64 \
+              -t ${CNB_DOCKER_REGISTRY}/${CNB_REPO_SLUG_LOWERCASE}:latest \
+              -t ${CNB_DOCKER_REGISTRY}/${CNB_REPO_SLUG_LOWERCASE}:${CNB_COMMIT_SHORT} \
+              -t ${TCR_CRANE_IMAGE}:latest \
+              -t ${TCR_CRANE_IMAGE}:${CNB_COMMIT_SHORT} --push .
