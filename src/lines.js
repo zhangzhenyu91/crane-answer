@@ -116,14 +116,15 @@ const ROMAN_BY_DIGIT = { 1: 'Ⅰ', 2: 'Ⅱ', 3: 'Ⅲ' };
 
 /**
  * 报送原文线路名归一化：
- * 去电压等级前缀（110kV）、去空白、阿拉伯/ASCII 罗马数字统一为 Ⅰ/Ⅱ/Ⅲ。
+ * 去电压等级前缀（110kV）、去空白、阿拉伯/ASCII 罗马数字统一为 Ⅰ/Ⅱ/Ⅲ
+ * （数字在「线」前或结尾均转换，兼容"吕汾1线"与"吕汾1"）。
  */
 function normalizeRawName(raw) {
   let s = String(raw || '').trim();
   s = s.replace(/^\d+\s*[kK][vV]\s*/, '');
   s = s.replace(/\s+/g, '');
-  s = s.replace(/III(?=线|$)/g, 'Ⅲ').replace(/II(?=线|$)/g, 'Ⅱ').replace(/I(?=线)/g, 'Ⅰ');
-  s = s.replace(/([123])(?=线)/g, (m, d) => ROMAN_BY_DIGIT[d]);
+  s = s.replace(/III(?=线|$)/g, 'Ⅲ').replace(/II(?=线|$)/g, 'Ⅱ').replace(/I(?=线|$)/g, 'Ⅰ');
+  s = s.replace(/([123])(?=线|$)/g, (m, d) => ROMAN_BY_DIGIT[d]);
   return s;
 }
 
