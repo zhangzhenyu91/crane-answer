@@ -1,8 +1,10 @@
 const config = require('./config');
-const { initSettings } = require('./settings');
+const { initSettings, getSettings } = require('./settings');
 const WeChatPadProClient = require('./wechatpadpro/client');
 const { handleMessage } = require('./wechatpadpro/messageHandler');
 const { createServer } = require('./server');
+const { initStore, sweepStaleSessions } = require('./inspection/store');
+const { initLines } = require('./lines');
 
 const client = new WeChatPadProClient({
   onMessage: handleMessage,
@@ -13,6 +15,26 @@ let shuttingDown = false;
 
 async function main() {
   initSettings();
+  initStore();
+  initLines();
+  const sweepTimer = setInterval(() => {
+    try {
+      const ended = sweepStaleSessions((session) => {
+        const rule = getSettings().rules.find((item) => item.id === session.ruleId);
+        return (rule && rule.sessionTimeoutHours) || 12;
+      });
+      for (const session of ended) {
+        console.log(`[树木排查] 会话超时自动结束：${session.groupName || session.groupId}，共捕获 ${session.records.length} 条`);
+      }
+    } catch (err) {
+      console.error(`[树木排查] 超时扫描异常：${err.stack || err}`);
+    }
+  }, 60 * 1000);
+  sweepTimer.unref();
+  const { wechat, rules } = getSettings();
+  if (!wechat.botWxid && rules.some((rule) => rule.enabled && rule.trigger === 'treeWatch')) {
+    console.warn('[app] 存在已启用的树木排查规则但未配置监听账号 wxid，@检测与自身消息排除将不生效');
+  }
   await new Promise((resolve, reject) => {
     server.once('error', reject);
     server.listen(config.port, config.host, resolve);

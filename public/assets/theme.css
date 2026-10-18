@@ -343,6 +343,30 @@
     animation: rise .3s var(--ease) both;
   }
   .modal-sm { width: min(440px, 100%); }
+  .modal-lg { width: min(1080px, 100%); }
+  .table-input {
+    width: 100%;
+    min-width: 90px;
+    padding: 5px 8px;
+    border: 1px solid transparent;
+    border-radius: 6px;
+    background: transparent;
+    color: var(--text);
+    font-size: 12.5px;
+    font-family: inherit;
+  }
+  .table-input:hover { border-color: var(--line); }
+  .table-input:focus { border-color: var(--blue); background: #fff; outline: none; }
+  .cell-select {
+    max-width: 180px;
+    padding: 4px 6px;
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    background: #fff;
+    color: var(--text);
+    font-size: 12px;
+    font-family: inherit;
+  }
   .modal-head { padding: 18px 22px; border-bottom: 1px solid var(--line); display: flex; align-items: center; gap: 12px; }
   .modal-head h2 { font-size: 16px; font-weight: 600; }
   .modal-head p { margin-top: 4px; color: var(--text-3); font-size: 11.5px; }

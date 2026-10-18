@@ -19,6 +19,8 @@
     <nav class="topnav" aria-label="管理导航">
       <button class="nav-item on" data-page="rules" aria-current="page">监听规则</button>
       <button class="nav-item" data-page="aliases">发送者别名</button>
+      <button class="nav-item" data-page="lines">线路表</button>
+      <button class="nav-item" data-page="inspection">排查记录</button>
       <button class="nav-item" data-page="settings">接入设置</button>
     </nav>
     <div class="topbar-right">
@@ -72,6 +74,51 @@
     </div>
   </section>
 
+  <section class="page-panel" id="page-lines" hidden>
+    <div class="page-head">
+      <div>
+        <h1>线路表</h1>
+        <p>树木排查记录按线路名称匹配电压等级与运行班组；上传新版一览表将整体替换。</p>
+      </div>
+      <div class="page-actions">
+        <button class="btn" id="uploadLinesBtn" type="button"><span data-icon="add"></span>上传 xlsx 更新</button>
+        <button class="btn" id="addLineBtn" type="button"><span data-icon="add"></span>新增一行</button>
+        <button class="btn btn-primary" id="saveLinesBtn" type="button"><span data-icon="save"></span>保存线路表</button>
+      </div>
+    </div>
+    <div class="info-bar"><span data-icon="info"></span><span>线路表为空时，排查记录的线路名称无法自动匹配电压等级；报送原文写法会自动归一（去电压前缀、1线→Ⅰ线、补「线」字）。修改后点击「保存线路表」生效。</span></div>
+    <div class="card table-card">
+      <div class="table-toolbar"><span class="table-count" id="lineCount"></span><div class="right"><button class="btn btn-sm" id="refreshLinesBtn" type="button"><span data-icon="refresh"></span>刷新</button></div></div>
+      <div class="table-wrap">
+        <table class="rules-table">
+          <thead><tr><th>电压等级（kV）</th><th>线路名称</th><th>运行班组</th><th>操作</th></tr></thead>
+          <tbody id="lineTableBody"></tbody>
+        </table>
+      </div>
+    </div>
+    <input type="file" id="linesFileInput" accept=".xlsx" hidden>
+  </section>
+
+  <section class="page-panel" id="page-inspection" hidden>
+    <div class="page-head">
+      <div>
+        <h1>排查记录</h1>
+        <p>树木排查会话的历史汇总，可查看明细、导出 xlsx 或删除。</p>
+      </div>
+      <div class="page-actions"><button class="btn" id="refreshSessionsBtn" type="button"><span data-icon="refresh"></span>刷新</button></div>
+    </div>
+    <div class="info-bar"><span data-icon="info"></span><span>会话由群内「@监听账号 + 开始关键词」开启，「@监听账号 + 结束关键词」或超时（默认 12 小时无新捕获）自动结束。</span></div>
+    <div class="card table-card">
+      <div class="table-toolbar"><span class="table-count" id="sessionCount"></span></div>
+      <div class="table-wrap">
+        <table class="rules-table">
+          <thead><tr><th>监听群</th><th>发起人</th><th>开始时间</th><th>结束时间</th><th>状态</th><th>记录数</th><th>操作</th></tr></thead>
+          <tbody id="sessionTableBody"></tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+
   <section class="page-panel" id="page-settings" hidden>
     <div class="page-head">
       <div>
@@ -91,6 +138,11 @@
             <label for="wppToken">Cloud Access Token <span class="required">*</span></label>
             <div class="input-with-status"><input class="input" id="wppToken" type="password" placeholder="留空则保持已保存的 Token" autocomplete="new-password"><span class="configured" id="tokenConfigured" hidden>已配置</span></div>
             <p class="field-hint">完整密钥不会回显到浏览器；重新输入即可替换。</p>
+          </div>
+          <div class="form-field full">
+            <label for="wppBotWxid">监听账号 wxid</label>
+            <input class="input mono" id="wppBotWxid" placeholder="如：wxid_bot_account01" autocomplete="off">
+            <p class="field-hint">树木排查（会话捕获）规则必填：用于识别群内「@监听账号」的开始/结束指令，并排除监听账号自身发送的消息。</p>
           </div>
           <div class="form-field">
             <label for="wppApiBase">API Base</label>
@@ -167,20 +219,32 @@
         <div class="group-list" id="groupList"></div>
       </section>
       <section class="form-section">
-        <div class="section-head"><h3>触发条件</h3><span>本期保持现有位置消息触发能力</span></div>
+        <div class="section-head"><h3>触发条件</h3><span>按位置消息触发，或树木排查会话捕获</span></div>
         <div class="form-grid">
-          <div class="form-field full"><label for="ruleTrigger">消息类型</label><select class="input" id="ruleTrigger"><option value="location">位置消息（kind=location）</option></select><p class="field-hint">仅当群成员发送有效位置消息时触发，自动提取经纬度、位置名称和发送者信息。</p></div>
+          <div class="form-field full"><label for="ruleTrigger">消息类型</label><select class="input" id="ruleTrigger"><option value="location">位置消息（kind=location）</option><option value="treeWatch">树木排查（会话捕获）</option></select><p class="field-hint" id="ruleTriggerHint">仅当群成员发送有效位置消息时触发，自动提取经纬度、位置名称和发送者信息。</p></div>
+        </div>
+        <div class="form-grid" id="treeWatchFields" hidden style="margin-top:14px">
+          <div class="form-field"><label for="ruleStartKeywords">开始关键词</label><input class="input" id="ruleStartKeywords" placeholder="开始记录树障, 开始排查" autocomplete="off"><p class="field-hint">逗号分隔；@监听账号且内容含任一关键词即开始记录会话。</p></div>
+          <div class="form-field"><label for="ruleEndKeywords">结束关键词</label><input class="input" id="ruleEndKeywords" placeholder="结束, 汇总" autocomplete="off"><p class="field-hint">@监听账号且内容含任一关键词即结束会话。</p></div>
+          <div class="form-field"><label for="ruleSessionTimeout">会话超时（小时）</label><input class="input" id="ruleSessionTimeout" type="number" min="1" max="72" step="1" value="12"><p class="field-hint">自最后一条捕获起超时无新内容，会话自动结束（1-72）。</p></div>
         </div>
       </section>
       <section class="form-section">
         <div class="section-head"><h3>执行动作</h3><span>输入参数自动映射，无需手动编排</span></div>
         <div class="form-field" style="margin-bottom:14px"><label for="ruleAction">动作类型</label><select class="input" id="ruleAction"><option value="dify">调用 Dify Workflow（blocking）</option></select></div>
-        <div class="mapping">
+        <div class="mapping" id="locationMapping">
           <div class="mapping-item"><code>lng</code><p>位置消息 longitude</p></div>
           <div class="mapping-item"><code>lat</code><p>位置消息 latitude</p></div>
           <div class="mapping-item"><code>nickname</code><p>别名或自动解析昵称</p></div>
           <div class="mapping-item"><code>wxid</code><p>发送者微信 wxid</p></div>
         </div>
+        <div class="mapping" id="treeWatchMapping" hidden>
+          <div class="mapping-item"><code>text</code><p>捕获的报送原文</p></div>
+          <div class="mapping-item"><code>nickname</code><p>别名或自动解析昵称</p></div>
+          <div class="mapping-item"><code>wxid</code><p>发送者微信 wxid</p></div>
+          <div class="mapping-item"><code>group</code><p>监听群备注名</p></div>
+        </div>
+        <p class="field-hint" id="treeWatchCorrectHint" hidden>引用已捕获记录的消息将调用「更正提取」工作流（每群需单独配置更正 API Key），输入为 correction_text / quoted_text / current_record。</p>
       </section>
     </div>
     <div class="modal-footer"><button class="btn" data-close="ruleMask" type="button">取消</button><button class="btn btn-primary" id="saveRuleBtn" type="button">保存规则</button></div>
@@ -203,6 +267,24 @@
     <div class="modal-head"><h2 id="confirmTitle">确认删除</h2><button class="icon-btn modal-close" data-close="confirmMask" type="button" aria-label="关闭"><span data-icon="close"></span></button></div>
     <div class="modal-body"><div class="confirm-icon" data-icon="warning"></div><p class="confirm-text" id="confirmText"></p></div>
     <div class="modal-footer"><button class="btn" data-close="confirmMask" type="button">取消</button><button class="btn btn-danger" id="confirmDeleteBtn" type="button">确认删除</button></div>
+  </section>
+</div>
+
+<div class="mask" id="sessionMask" hidden>
+  <section class="modal modal-lg" role="dialog" aria-modal="true" aria-labelledby="sessionModalTitle">
+    <div class="modal-head">
+      <div><h2 id="sessionModalTitle">会话明细</h2><p id="sessionModalSub"></p></div>
+      <button class="icon-btn modal-close" data-close="sessionMask" type="button" aria-label="关闭"><span data-icon="close"></span></button>
+    </div>
+    <div class="modal-body">
+      <div class="table-wrap">
+        <table class="rules-table">
+          <thead><tr><th>时间</th><th>发现人</th><th>报送原文</th><th>线路名称</th><th>区段</th><th>树种</th><th>数量</th><th>水平</th><th>垂直</th><th>状态</th><th>更正</th></tr></thead>
+          <tbody id="recordTableBody"></tbody>
+        </table>
+      </div>
+    </div>
+    <div class="modal-footer"><button class="btn" data-close="sessionMask" type="button">关闭</button><button class="btn btn-primary" id="exportSessionBtn" type="button">导出 xlsx</button></div>
   </section>
 </div>
 

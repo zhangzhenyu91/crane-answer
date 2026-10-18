@@ -3,7 +3,7 @@ const { getSettings } = require('./settings');
 /**
  * 调用 Dify workflow（blocking 模式）。
  * @param {string} apiKey 该群对应的 Dify API Key
- * @param {{ lng: number|string, lat: number|string, nickname: string, wxid: string }} inputs
+ * @param {object} inputs 工作流输入变量，键名需与 Dify 侧定义一致，原样透传
  * @returns {Promise<object>} Dify 响应体
  */
 async function runWorkflow(apiKey, inputs) {
@@ -18,12 +18,7 @@ async function runWorkflow(apiKey, inputs) {
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({
-        inputs: {
-          lng: String(inputs.lng ?? ''),
-          lat: String(inputs.lat ?? ''),
-          nickname: inputs.nickname || '',
-          wxid: inputs.wxid || '',
-        },
+        inputs: inputs || {},
         response_mode: 'blocking',
         user: dify.user,
       }),

@@ -51,6 +51,7 @@ function defaultSettings() {
       ticketPath: env.WECHATPADPRO_TICKET_PATH || '/cloud/v1/Runtime/WebSocketTicket',
       wsUrl: env.WECHATPADPRO_WS_URL || 'wss://api.wechatpadpro.com/ws/sync',
       logRawMessage: env.LOG_RAW_MESSAGE === '1',
+      botWxid: env.WECHATPADPRO_BOT_WXID || '',
     },
     dify: {
       apiBase: trimTrailingSlash(env.DIFY_API_BASE || 'https://ai.j1net.com/v1'),
@@ -116,6 +117,7 @@ function getPublicState() {
       wsUrl: current.wechat.wsUrl,
       logRawMessage: Boolean(current.wechat.logRawMessage),
       hasToken: Boolean(current.wechat.token),
+      botWxid: current.wechat.botWxid || '',
     },
     dify: { ...current.dify },
     rules: current.rules.map((rule) => ({
@@ -125,11 +127,15 @@ function getPublicState() {
       enabled: Boolean(rule.enabled),
       trigger: rule.trigger,
       action: rule.action,
+      startKeywords: Array.isArray(rule.startKeywords) ? rule.startKeywords : [],
+      endKeywords: Array.isArray(rule.endKeywords) ? rule.endKeywords : [],
+      sessionTimeoutHours: rule.sessionTimeoutHours || 12,
       groups: (rule.groups || []).map((group) => ({
         id: group.id,
         name: group.name,
         groupId: group.groupId,
         hasKey: Boolean(group.apiKey),
+        hasCorrectKey: Boolean(group.correctApiKey),
       })),
     })),
     aliases: clone(current.aliases),
@@ -185,6 +191,9 @@ function buildWechat(input, current) {
     logRawMessage: Object.prototype.hasOwnProperty.call(data, 'logRawMessage')
       ? Boolean(data.logRawMessage)
       : Boolean(current.logRawMessage),
+    botWxid: Object.prototype.hasOwnProperty.call(data, 'botWxid')
+      ? String(data.botWxid || '').trim()
+      : (current.botWxid || ''),
   };
 }
 
@@ -218,12 +227,18 @@ function updateSettings(input) {
   return { connectionChanged, state: getPublicState() };
 }
 
+function normalizeKeywords(value, fallback) {
+  if (!Array.isArray(value)) return fallback;
+  const list = value.map((item) => String(item || '').trim()).filter(Boolean).slice(0, 20);
+  return list.length ? list : fallback;
+}
+
 function buildRule(input, existing) {
   const data = input || {};
   const name = requiredText(data.name, '规则名称', 40);
   const trigger = data.trigger || 'location';
   const action = data.action || 'dify';
-  if (trigger !== 'location') throw createError('当前仅支持位置消息触发');
+  if (!['location', 'treeWatch'].includes(trigger)) throw createError('触发条件仅支持位置消息或树木排查会话');
   if (action !== 'dify') throw createError('当前仅支持 Dify Workflow 动作');
   if (!Array.isArray(data.groups) || !data.groups.length) throw createError('请至少配置一个监听群');
   if (data.groups.length > 100) throw createError('单条规则最多配置 100 个监听群');
@@ -238,14 +253,22 @@ function buildRule(input, existing) {
     const previous = existing && (existing.groups || []).find((entry) => entry.id === group.id);
     const apiKey = String(group.key || '').trim() || (previous && previous.apiKey) || '';
     if (!apiKey) throw createError(`请填写监听群 ${index + 1} 的 Dify API Key`);
-    return {
+    const entry = {
       id: previous ? previous.id : id('grp'),
       name: groupName,
       groupId,
       apiKey,
     };
+    if (trigger === 'treeWatch') {
+      const correctApiKey = String(group.correctKey || '').trim() || (previous && previous.correctApiKey) || '';
+      if (!correctApiKey) throw createError(`请填写监听群 ${index + 1} 的更正提取 Dify API Key`);
+      entry.correctApiKey = correctApiKey;
+    } else if (previous && previous.correctApiKey) {
+      entry.correctApiKey = previous.correctApiKey;
+    }
+    return entry;
   });
-  return {
+  const rule = {
     id: existing ? existing.id : id('rule'),
     name,
     isDefault: existing ? Boolean(existing.isDefault) : false,
@@ -254,6 +277,18 @@ function buildRule(input, existing) {
     action,
     groups,
   };
+  if (trigger === 'treeWatch') {
+    const timeoutHours = Number(Object.prototype.hasOwnProperty.call(data, 'sessionTimeoutHours') ? data.sessionTimeoutHours : existing ? existing.sessionTimeoutHours : 12);
+    if (!Number.isInteger(timeoutHours) || timeoutHours < 1 || timeoutHours > 72) throw createError('会话超时必须是 1-72 的整数小时');
+    rule.startKeywords = normalizeKeywords(data.startKeywords, existing && existing.startKeywords && existing.startKeywords.length ? existing.startKeywords : ['开始记录树障', '开始记录', '开始排查']);
+    rule.endKeywords = normalizeKeywords(data.endKeywords, existing && existing.endKeywords && existing.endKeywords.length ? existing.endKeywords : ['结束', '汇总', '结束记录']);
+    rule.sessionTimeoutHours = timeoutHours;
+  } else {
+    if (existing && Array.isArray(existing.startKeywords)) rule.startKeywords = existing.startKeywords;
+    if (existing && Array.isArray(existing.endKeywords)) rule.endKeywords = existing.endKeywords;
+    if (existing && existing.sessionTimeoutHours) rule.sessionTimeoutHours = existing.sessionTimeoutHours;
+  }
+  return rule;
 }
 
 function createRule(input) {

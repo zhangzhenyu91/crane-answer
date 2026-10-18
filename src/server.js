@@ -18,6 +18,10 @@ const {
   deleteAlias,
 } = require('./settings');
 const { fetchTicket } = require('./wechatpadpro/client');
+const lines = require('./lines');
+const store = require('./inspection/store');
+const { buildSessionWorkbook, exportFileName } = require('./inspection/export');
+const { sendSessionXlsx } = require('./inspection/deliver');
 
 const SESSION_COOKIE = 'crane_session';
 const SESSION_TTL_MS = 12 * 60 * 60 * 1000;
@@ -82,7 +86,7 @@ function createApp({ client }) {
   const app = express();
   app.set('trust proxy', 1);
   app.disable('x-powered-by');
-  app.use(express.json({ limit: '1mb' }));
+  app.use(express.json({ limit: '10mb' }));
 
   app.get('/api/health', (req, res) => ok(res, { status: 'up', time: new Date().toISOString() }));
   app.use('/api', (req, res, next) => {
@@ -173,6 +177,69 @@ function createApp({ client }) {
     deleteAlias(req.params.id);
     return ok(res, getPublicState());
   });
+
+  app.get('/api/lines', (req, res) => ok(res, { lines: lines.getLines(), updatedAt: lines.getUpdatedAt() }));
+  app.put('/api/lines', (req, res) => {
+    const list = lines.replaceLines((req.body && req.body.lines) || []);
+    return ok(res, { lines: list, updatedAt: lines.getUpdatedAt() });
+  });
+  app.post('/api/lines/upload', asyncRoute(async (req, res) => {
+    const fileBase64 = String((req.body && req.body.fileBase64) || '');
+    if (!fileBase64) return res.status(400).json({ ok: false, error: { message: '请上传 xlsx 文件' } });
+    const buffer = Buffer.from(fileBase64, 'base64');
+    if (!buffer.length || buffer.length > 5 * 1024 * 1024) {
+      return res.status(400).json({ ok: false, error: { message: '文件为空或超过 5MB 限制' } });
+    }
+    const parsed = await lines.parseLinesXlsx(buffer);
+    const list = lines.replaceLines(parsed);
+    return ok(res, { lines: list, updatedAt: lines.getUpdatedAt() });
+  }));
+
+  app.get('/api/inspection/sessions', (req, res) => ok(res, {
+    sessions: store.listSessions({ groupId: req.query.groupId || '', status: req.query.status || '' }),
+  }));
+  app.get('/api/inspection/sessions/:id', (req, res) => {
+    const session = store.getSession(req.params.id);
+    if (!session) return res.status(404).json({ ok: false, error: { message: '会话不存在' } });
+    return ok(res, session);
+  });
+  app.post('/api/inspection/sessions/:id/end', (req, res) => {
+    const session = store.endSession(req.params.id, 'manual');
+    if (!session) return res.status(409).json({ ok: false, error: { message: '会话不存在或已结束' } });
+    return ok(res, session);
+  });
+  app.delete('/api/inspection/sessions/:id', (req, res) => {
+    if (!store.deleteSession(req.params.id)) {
+      return res.status(404).json({ ok: false, error: { message: '会话不存在' } });
+    }
+    return ok(res, { deleted: true });
+  });
+  app.patch('/api/inspection/records/:id', (req, res) => {
+    const lineName = String((req.body && req.body.lineName) || '').trim();
+    if (!lineName) return res.status(400).json({ ok: false, error: { message: '请指定线路名称' } });
+    const line = lines.getLines().find((item) => item.name === lineName);
+    if (!line) return res.status(400).json({ ok: false, error: { message: '线路表中没有该线路' } });
+    const record = store.assignRecordLine(req.params.id, line);
+    if (!record) return res.status(404).json({ ok: false, error: { message: '记录不存在' } });
+    return ok(res, record);
+  });
+  app.get('/api/inspection/sessions/:id/export.xlsx', asyncRoute(async (req, res) => {
+    const session = store.getSession(req.params.id);
+    if (!session) return res.status(404).json({ ok: false, error: { message: '会话不存在' } });
+    const workbook = await buildSessionWorkbook(session);
+    const fileName = exportFileName(session);
+    res.set('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    res.set('Content-Disposition', `attachment; filename="export.xlsx"; filename*=UTF-8''${encodeURIComponent(fileName)}`);
+    await workbook.xlsx.write(res);
+    res.end();
+  }));
+  app.post('/api/inspection/sessions/:id/send', asyncRoute(async (req, res) => {
+    const session = store.getSession(req.params.id);
+    if (!session) return res.status(404).json({ ok: false, error: { message: '会话不存在' } });
+    if (!session.records.length) return res.status(400).json({ ok: false, error: { message: '会话没有记录，无法发送' } });
+    const result = await sendSessionXlsx(session);
+    return ok(res, result);
+  }));
 
   app.use('/api', (req, res) => res.status(404).json({ ok: false, error: { message: '接口不存在' } }));
   app.use(express.static(publicDir, { index: false, maxAge: 0 }));

@@ -25,6 +25,11 @@
     dify: null,
     rules: [],
     aliases: [],
+    lines: [],
+    linesUpdatedAt: null,
+    editingLines: [],
+    sessions: [],
+    currentSession: null,
     editingRuleId: null,
     editingAliasId: null,
     editingGroups: [],
@@ -126,6 +131,9 @@
       document.querySelectorAll('.page-panel').forEach(function (panel) {
         panel.hidden = panel.id !== 'page-' + btn.getAttribute('data-page');
       });
+      var page = btn.getAttribute('data-page');
+      if (page === 'lines') loadLines(false).catch(function (err) { toast(err.message, 'error'); });
+      if (page === 'inspection') loadSessions(false).catch(function (err) { toast(err.message, 'error'); });
     });
   });
 
@@ -148,6 +156,7 @@
     $('wppApiBase').value = state.wechat.apiBase;
     $('wppTicketPath').value = state.wechat.ticketPath;
     $('wppWsUrl').value = state.wechat.wsUrl;
+    $('wppBotWxid').value = state.wechat.botWxid || '';
     $('difyApiBase').value = state.dify.apiBase;
     $('difyUser').value = state.dify.user;
     $('difyTimeout').value = state.dify.timeoutMs;
@@ -172,10 +181,13 @@
     $('ruleTableBody').innerHTML = state.rules.map(function (rule) {
       var chips = rule.groups.slice(0, 2).map(function (group) { return '<span class="group-chip">' + esc(group.name || '未命名群') + '</span>'; }).join('');
       if (rule.groups.length > 2) chips += '<span class="group-chip">+' + (rule.groups.length - 2) + '</span>';
+      var triggerCell = rule.trigger === 'treeWatch'
+        ? '<td><span class="tag tag-green">树木排查</span><div class="cell-sub mono">@+关键词会话</div></td>'
+        : '<td><span class="tag tag-blue">位置消息</span><div class="cell-sub mono">kind=location</div></td>';
       return '<tr>' +
         '<td><div class="rule-name">' + esc(rule.name) + (rule.isDefault ? '<span class="tag tag-blue">默认规则</span>' : '') + '</div><div class="cell-sub" title="' + esc(rule.id) + '">规则编号 ' + esc(rule.id.slice(-8)) + '</div></td>' +
         '<td><div class="group-chips">' + (chips || '<span class="cell-sub">未配置监听群</span>') + '</div><div class="cell-sub">共 ' + rule.groups.length + ' 个群</div></td>' +
-        '<td><span class="tag tag-blue">位置消息</span><div class="cell-sub mono">kind=location</div></td>' +
+        triggerCell +
         '<td><span class="cell-main">Dify 工作流</span><div class="cell-sub">blocking 模式</div></td>' +
         '<td><div class="switch-line"><button class="switch' + (rule.enabled ? ' on' : '') + '" type="button" role="switch" aria-checked="' + rule.enabled + '" aria-label="切换规则状态" data-rule-action="toggle" data-id="' + esc(rule.id) + '"></button><span class="switch-label">' + (rule.enabled ? '启用' : '停用') + '</span></div></td>' +
         '<td><div class="actions"><button class="text-btn primary" data-rule-action="edit" data-id="' + esc(rule.id) + '" type="button">编辑</button><button class="text-btn" data-rule-action="copy" data-id="' + esc(rule.id) + '" type="button">复制</button><button class="text-btn" data-rule-action="toggle" data-id="' + esc(rule.id) + '" type="button">' + (rule.enabled ? '停用' : '启用') + '</button><button class="text-btn danger" data-rule-action="delete" data-id="' + esc(rule.id) + '" type="button">删除</button></div></td>' +
@@ -188,31 +200,54 @@
       $('groupList').innerHTML = '<div class="empty" style="padding:24px"><p>尚未添加监听群，请点击右上角“添加监听群”</p></div>';
       return;
     }
+    var isTreeWatch = $('ruleTrigger').value === 'treeWatch';
     $('groupList').innerHTML = state.editingGroups.map(function (group, index) {
       return '<div class="group-item" data-group-index="' + index + '">' +
         '<div class="group-item-head"><strong>监听群 ' + (index + 1) + '</strong>' + (group.hasKey ? '<span class="tag tag-green status-dot">Key 已配置</span>': '<span class="tag tag-orange">待配置 Key</span>') + '<button class="icon-btn" type="button" data-remove-group="' + index + '" aria-label="删除监听群">' + icon('trash', 14) + '</button></div>' +
         '<div class="group-fields">' +
           '<div class="form-field"><label>群备注 <span class="required">*</span></label><input class="input" data-group-field="name" value="' + esc(group.name) + '" placeholder="如：东区吊车协调群" autocomplete="off"></div>' +
           '<div class="form-field"><label>群 ID <span class="required">*</span></label><input class="input mono" data-group-field="groupId" value="' + esc(group.groupId) + '" placeholder="如：100860001@chatroom" autocomplete="off"></div>' +
-          '<div class="form-field"><label>Dify API Key <span class="required">*</span></label><input class="input" type="password" data-group-field="key" value="' + esc(group.key || '') + '" placeholder="' + (group.hasKey ? '留空则保持已保存 Key' : '请输入 app-xxxxxxxx') + '" autocomplete="new-password"></div>' +
+          '<div class="form-field"><label>' + (isTreeWatch ? '提取工作流 API Key' : 'Dify API Key') + ' <span class="required">*</span></label><input class="input" type="password" data-group-field="key" value="' + esc(group.key || '') + '" placeholder="' + (group.hasKey ? '留空则保持已保存 Key' : '请输入 app-xxxxxxxx') + '" autocomplete="new-password"></div>' +
+          (isTreeWatch ? '<div class="form-field"><label>更正提取 API Key <span class="required">*</span></label><input class="input" type="password" data-group-field="correctKey" value="' + esc(group.correctKey || '') + '" placeholder="' + (group.hasCorrectKey ? '留空则保持已保存 Key' : '请输入更正工作流 app-xxxxxxxx') + '" autocomplete="new-password"></div>' : '') +
         '</div>' +
       '</div>';
     }).join('');
   }
 
+  function syncTriggerFields() {
+    var isTreeWatch = $('ruleTrigger').value === 'treeWatch';
+    $('treeWatchFields').hidden = !isTreeWatch;
+    $('locationMapping').hidden = isTreeWatch;
+    $('treeWatchMapping').hidden = !isTreeWatch;
+    $('treeWatchCorrectHint').hidden = !isTreeWatch;
+    $('ruleTriggerHint').textContent = isTreeWatch
+      ? '@监听账号 + 开始关键词开启记录会话；会话内命中捕获条件的消息逐条调用提取工作流，引用记录的消息调用更正工作流。'
+      : '仅当群成员发送有效位置消息时触发，自动提取经纬度、位置名称和发送者信息。';
+  }
+
   function openRuleEditor(rule) {
     state.editingRuleId = rule ? rule.id : null;
-    state.editingGroups = rule ? clone(rule.groups) : [{ name: '', groupId: '', hasKey: false, key: '' }];
+    state.editingGroups = rule ? clone(rule.groups) : [{ name: '', groupId: '', hasKey: false, key: '', hasCorrectKey: false, correctKey: '' }];
     $('ruleModalTitle').textContent = rule ? '编辑监听规则' : '新建监听规则';
     $('ruleName').value = rule ? rule.name : '';
+    $('ruleTrigger').value = rule && rule.trigger === 'treeWatch' ? 'treeWatch' : 'location';
+    $('ruleStartKeywords').value = rule && rule.startKeywords && rule.startKeywords.length ? rule.startKeywords.join(', ') : '开始记录树障, 开始记录, 开始排查';
+    $('ruleEndKeywords').value = rule && rule.endKeywords && rule.endKeywords.length ? rule.endKeywords.join(', ') : '结束, 汇总, 结束记录';
+    $('ruleSessionTimeout').value = rule && rule.sessionTimeoutHours ? rule.sessionTimeoutHours : 12;
     var enabled = rule ? rule.enabled : true;
     $('ruleEnabledSwitch').classList.toggle('on', enabled);
     $('ruleEnabledSwitch').setAttribute('aria-checked', String(enabled));
     $('ruleEnabledText').textContent = enabled ? '启用' : '停用';
+    syncTriggerFields();
     renderGroupEditor();
     openMask('ruleMask');
     setTimeout(function () { $('ruleName').focus(); }, 50);
   }
+
+  $('ruleTrigger').addEventListener('change', function () {
+    syncTriggerFields();
+    renderGroupEditor();
+  });
 
   $('addRuleBtn').addEventListener('click', function () { openRuleEditor(null); });
   $('refreshRulesBtn').addEventListener('click', function () {
@@ -282,18 +317,36 @@
       var name = $('ruleName').value.trim();
       if (!name) throw new Error('请输入规则名称');
       if (!state.editingGroups.length) throw new Error('请至少添加一个监听群');
+      var trigger = $('ruleTrigger').value === 'treeWatch' ? 'treeWatch' : 'location';
       var groups = state.editingGroups.map(function (group, index) {
         if (!group.name.trim() || !group.groupId.trim()) throw new Error('请完整填写监听群 ' + (index + 1) + ' 的备注和群 ID');
         if (!group.hasKey && !(group.key || '').trim()) throw new Error('请填写监听群 ' + (index + 1) + ' 的 Dify API Key');
-        return { id: group.id, name: group.name.trim(), groupId: group.groupId.trim(), key: (group.key || '').trim() };
+        var item = { id: group.id, name: group.name.trim(), groupId: group.groupId.trim(), key: (group.key || '').trim() };
+        if (trigger === 'treeWatch') {
+          if (!group.hasCorrectKey && !(group.correctKey || '').trim()) throw new Error('请填写监听群 ' + (index + 1) + ' 的更正提取 API Key');
+          item.correctKey = (group.correctKey || '').trim();
+        }
+        return item;
       });
       var payload = {
         name: name,
         enabled: $('ruleEnabledSwitch').classList.contains('on'),
-        trigger: 'location',
+        trigger: trigger,
         action: 'dify',
         groups: groups,
       };
+      if (trigger === 'treeWatch') {
+        var splitKeywords = function (raw) {
+          return raw.split(/[,，]/).map(function (item) { return item.trim(); }).filter(Boolean);
+        };
+        payload.startKeywords = splitKeywords($('ruleStartKeywords').value);
+        payload.endKeywords = splitKeywords($('ruleEndKeywords').value);
+        if (!payload.startKeywords.length) throw new Error('请填写开始关键词');
+        if (!payload.endKeywords.length) throw new Error('请填写结束关键词');
+        var timeout = Number($('ruleSessionTimeout').value);
+        if (!Number.isInteger(timeout) || timeout < 1 || timeout > 72) throw new Error('会话超时应在 1–72 小时之间');
+        payload.sessionTimeoutHours = timeout;
+      }
       var editing = Boolean(state.editingRuleId);
       var data = await api(editing ? '/api/rules/' + encodeURIComponent(state.editingRuleId) : '/api/rules', {
         method: editing ? 'PUT' : 'POST',
@@ -366,6 +419,14 @@
     busy(btn, async function () {
       if (!state.deleteTarget) return;
       var target = state.deleteTarget;
+      if (target.type === 'session') {
+        await api('/api/inspection/sessions/' + encodeURIComponent(target.id), { method: 'DELETE' });
+        state.deleteTarget = null;
+        closeMask('confirmMask');
+        await loadSessions(false);
+        toast('已删除');
+        return;
+      }
       var data = await api('/api/' + (target.type === 'rule' ? 'rules/' : 'aliases/') + encodeURIComponent(target.id), { method: 'DELETE' });
       state.deleteTarget = null;
       applyState(data);
@@ -387,6 +448,7 @@
       ticketPath: $('wppTicketPath').value.trim(),
       wsUrl: $('wppWsUrl').value.trim(),
       logRawMessage: $('rawLogSwitch').classList.contains('on'),
+      botWxid: $('wppBotWxid').value.trim(),
     };
   }
 
@@ -443,6 +505,253 @@
       await api('/api/auth/logout', { method: 'POST' });
       window.location.replace('/login.html');
     });
+  });
+
+  /* ------------------------- 线路表 ------------------------- */
+
+  async function loadLines(showFeedback) {
+    var data = await api('/api/lines');
+    state.lines = data.lines || [];
+    state.linesUpdatedAt = data.updatedAt || null;
+    state.editingLines = clone(state.lines);
+    renderLines();
+    if (showFeedback) toast('线路表已刷新', 'info');
+  }
+
+  function renderLines() {
+    $('lineCount').textContent = '共 ' + state.editingLines.length + ' 条线路' + (state.linesUpdatedAt ? ' · 更新于 ' + new Date(state.linesUpdatedAt).toLocaleString('zh-CN', { hour12: false }) : '');
+    if (!state.editingLines.length) {
+      $('lineTableBody').innerHTML = '<tr><td colspan="4"><div class="empty"><div class="empty-icon">' + icon('rules', 24) + '</div><p>暂无线路，点击右上角「上传 xlsx 更新」导入一览表</p></div></td></tr>';
+      return;
+    }
+    $('lineTableBody').innerHTML = state.editingLines.map(function (line, index) {
+      return '<tr data-line-index="' + index + '">' +
+        '<td><input class="table-input" data-line-field="voltage" value="' + esc(line.voltage) + '" placeholder="如：220" autocomplete="off"></td>' +
+        '<td><input class="table-input" data-line-field="name" value="' + esc(line.name) + '" placeholder="如：孝南线" autocomplete="off"></td>' +
+        '<td><input class="table-input" data-line-field="team" value="' + esc(line.team) + '" placeholder="如：检修一班" autocomplete="off"></td>' +
+        '<td><button class="text-btn danger" data-remove-line="' + index + '" type="button">删除</button></td>' +
+      '</tr>';
+    }).join('');
+  }
+
+  $('refreshLinesBtn').addEventListener('click', function () {
+    var btn = this;
+    busy(btn, function () { return loadLines(true); });
+  });
+  $('addLineBtn').addEventListener('click', function () {
+    state.editingLines.push({ voltage: '', name: '', team: '' });
+    renderLines();
+  });
+  $('lineTableBody').addEventListener('input', function (event) {
+    var input = event.target.closest('[data-line-field]');
+    if (!input) return;
+    var row = input.closest('[data-line-index]');
+    var line = state.editingLines[Number(row.getAttribute('data-line-index'))];
+    line[input.getAttribute('data-line-field')] = input.value;
+  });
+  $('lineTableBody').addEventListener('click', function (event) {
+    var btn = event.target.closest('[data-remove-line]');
+    if (!btn) return;
+    state.editingLines.splice(Number(btn.getAttribute('data-remove-line')), 1);
+    renderLines();
+  });
+  $('saveLinesBtn').addEventListener('click', function () {
+    var btn = this;
+    busy(btn, async function () {
+      var list = state.editingLines.map(function (line, index) {
+        var name = (line.name || '').trim();
+        if (!name) throw new Error('第 ' + (index + 1) + ' 行线路名称为空');
+        return { voltage: (line.voltage || '').trim(), name: name, team: (line.team || '').trim() };
+      });
+      if (!list.length) throw new Error('线路表不能为空');
+      await api('/api/lines', { method: 'PUT', body: { lines: list } });
+      await loadLines(false);
+      toast('线路表已保存');
+    });
+  });
+  $('uploadLinesBtn').addEventListener('click', function () { $('linesFileInput').click(); });
+  $('linesFileInput').addEventListener('change', function () {
+    var file = this.files && this.files[0];
+    this.value = '';
+    if (!file) return;
+    var reader = new FileReader();
+    reader.onload = function () {
+      var base64 = String(reader.result || '').split(',')[1] || '';
+      if (!base64) { toast('文件读取失败', 'error'); return; }
+      busy($('uploadLinesBtn'), async function () {
+        var data = await api('/api/lines/upload', { method: 'POST', body: { fileBase64: base64 } });
+        state.lines = data.lines || [];
+        state.linesUpdatedAt = data.updatedAt || null;
+        state.editingLines = clone(state.lines);
+        renderLines();
+        toast('已导入 ' + state.lines.length + ' 条线路');
+      });
+    };
+    reader.onerror = function () { toast('文件读取失败', 'error'); };
+    reader.readAsDataURL(file);
+  });
+
+  /* ------------------------- 排查记录 ------------------------- */
+
+  function fmtTime(unix) {
+    return unix ? new Date(unix * 1000).toLocaleString('zh-CN', { hour12: false }) : '-';
+  }
+
+  function showVal(value) {
+    return value == null || String(value).trim() === '' ? '' : esc(String(value).trim());
+  }
+
+  var END_REASONS = { keyword: '指令结束', timeout: '超时结束', manual: '手动结束' };
+
+  async function loadSessions(showFeedback) {
+    var data = await api('/api/inspection/sessions');
+    state.sessions = data.sessions || [];
+    renderSessions();
+    if (showFeedback) toast('排查记录已刷新', 'info');
+  }
+
+  function renderSessions() {
+    $('sessionCount').textContent = '共 ' + state.sessions.length + ' 个会话';
+    if (!state.sessions.length) {
+      $('sessionTableBody').innerHTML = '<tr><td colspan="7"><div class="empty"><div class="empty-icon">' + icon('message', 24) + '</div><p>暂无排查会话，在群内「@监听账号 + 开始关键词」即可开始记录</p></div></td></tr>';
+      return;
+    }
+    $('sessionTableBody').innerHTML = state.sessions.map(function (session) {
+      var statusCell = session.status === 'active'
+        ? '<span class="tag tag-green">进行中</span>'
+        : '<span class="tag tag-gray">已结束</span><div class="cell-sub">' + esc(END_REASONS[session.endReason] || '已结束') + '</div>';
+      if (session.sentAt) statusCell += '<div class="cell-sub"><span class="tag tag-blue">已发群 ' + fmtTime(session.sentAt).slice(5) + '</span></div>';
+      var countCell = '<span class="cell-main">' + session.recordCount + '</span>'
+        + (session.pendingCount ? '<div class="cell-sub"><span class="tag tag-orange">待确认 ' + session.pendingCount + '</span></div>' : '');
+      var actions = '<button class="text-btn primary" data-session-action="detail" data-id="' + esc(session.id) + '" type="button">详情</button>'
+        + (session.status === 'active' ? '<button class="text-btn" data-session-action="end" data-id="' + esc(session.id) + '" type="button">结束</button>' : '')
+        + '<button class="text-btn" data-session-action="export" data-id="' + esc(session.id) + '" type="button">导出</button>'
+        + '<button class="text-btn" data-session-action="send" data-id="' + esc(session.id) + '" type="button">发至群聊</button>'
+        + '<button class="text-btn danger" data-session-action="delete" data-id="' + esc(session.id) + '" type="button">删除</button>';
+      return '<tr>' +
+        '<td><span class="cell-main">' + esc(session.groupName || '未命名群') + '</span><div class="cell-sub mono">' + esc(session.groupId) + '</div></td>' +
+        '<td>' + esc(session.startedByName || '-') + '</td>' +
+        '<td>' + fmtTime(session.startedAt) + '</td>' +
+        '<td>' + (session.status === 'active' ? '-' : fmtTime(session.endedAt)) + '</td>' +
+        '<td>' + statusCell + '</td>' +
+        '<td>' + countCell + '</td>' +
+        '<td><div class="actions">' + actions + '</div></td>' +
+      '</tr>';
+    }).join('');
+  }
+
+  $('refreshSessionsBtn').addEventListener('click', function () {
+    var btn = this;
+    busy(btn, function () { return loadSessions(true); });
+  });
+
+  $('sessionTableBody').addEventListener('click', function (event) {
+    var btn = event.target.closest('[data-session-action]');
+    if (!btn) return;
+    var id = btn.getAttribute('data-id');
+    var action = btn.getAttribute('data-session-action');
+    var session = state.sessions.find(function (item) { return item.id === id; });
+    if (action === 'detail') openSessionDetail(id, btn);
+    if (action === 'end') {
+      busy(btn, async function () {
+        await api('/api/inspection/sessions/' + encodeURIComponent(id) + '/end', { method: 'POST' });
+        await loadSessions(false);
+        toast('会话已结束');
+      });
+    }
+    if (action === 'export') window.open('/api/inspection/sessions/' + encodeURIComponent(id) + '/export.xlsx', '_blank');
+    if (action === 'send') {
+      busy(btn, async function () {
+        var result = await api('/api/inspection/sessions/' + encodeURIComponent(id) + '/send', { method: 'POST' });
+        await loadSessions(false);
+        toast('已发送至群聊：' + result.fileName);
+      });
+    }
+    if (action === 'delete') {
+      state.deleteTarget = { type: 'session', id: id };
+      $('confirmText').innerHTML = '确定删除该会话及其全部 <strong>' + (session ? session.recordCount : 0) + '</strong> 条记录吗？此操作不可恢复。';
+      openMask('confirmMask');
+    }
+  });
+
+  function openSessionDetail(id, btn) {
+    busy(btn, async function () {
+      state.currentSession = await api('/api/inspection/sessions/' + encodeURIComponent(id));
+      renderRecords();
+      openMask('sessionMask');
+    });
+  }
+
+  function recSection(ex) {
+    var from = Number(ex.pole_from);
+    var to = Number(ex.pole_to);
+    if (!Number.isFinite(from) || from <= 0) return '';
+    var note = String(ex.position_note || '').trim();
+    var suffix = note && note !== '塔底' ? note : '';
+    if (!Number.isFinite(to) || to <= 0 || to === from) return from + '#' + suffix;
+    return from + '#-' + to + '#' + suffix;
+  }
+
+  function renderRecords() {
+    var session = state.currentSession;
+    if (!session) return;
+    $('sessionModalTitle').textContent = (session.groupName || '会话') + ' · 记录明细';
+    $('sessionModalSub').textContent = '发起人 ' + (session.startedByName || '-') + ' · 开始于 ' + fmtTime(session.startedAt) + ' · 共 ' + session.records.length + ' 条';
+    if (!session.records.length) {
+      $('recordTableBody').innerHTML = '<tr><td colspan="11"><div class="empty"><p>该会话没有捕获到记录</p></div></td></tr>';
+      return;
+    }
+    $('recordTableBody').innerHTML = session.records.map(function (rec) {
+      var ex = rec.extracted || {};
+      var lineCell;
+      if (rec.matchStatus === 'ok' && rec.matchedLine) {
+        lineCell = '<span class="cell-main">' + esc(rec.matchedLine.name) + '</span>' + (rec.matchedLine.voltage ? '<div class="cell-sub">' + esc(rec.matchedLine.voltage) + 'kV</div>' : '');
+      } else {
+        var options = ['<option value="">待确认' + (rec.lineNameRaw ? '（' + esc(rec.lineNameRaw) + '）' : '') + '</option>'];
+        state.lines.forEach(function (line) { options.push('<option value="' + esc(line.name) + '">' + esc(line.name) + '</option>'); });
+        lineCell = '<select class="cell-select" data-assign-line="' + esc(rec.id) + '">' + options.join('') + '</select>';
+      }
+      var vertical = ex.over_height != null && String(ex.over_height).trim() !== '' ? '超高' + String(ex.over_height).trim() : showVal(ex.vertical);
+      var statusCell = rec.status === 'pending'
+        ? '<span class="tag tag-blue">解析中</span>'
+        : rec.handledNote ? '<span class="tag tag-green">' + esc(rec.handledNote) + '</span>' : '<span class="tag tag-gray">待处理</span>';
+      var corrCount = (rec.correctionHistory || []).filter(function (item) { return item.patches; }).length;
+      return '<tr>' +
+        '<td class="cell-sub">' + fmtTime(rec.capturedAt) + '</td>' +
+        '<td>' + esc(rec.senderName || rec.senderId || '-') + '</td>' +
+        '<td><div class="cell-main" style="max-width:260px;white-space:normal">' + esc(rec.content) + '</div></td>' +
+        '<td>' + lineCell + '</td>' +
+        '<td>' + esc(recSection(ex)) + '</td>' +
+        '<td>' + showVal(ex.tree_species) + '</td>' +
+        '<td>' + showVal(ex.tree_count) + '</td>' +
+        '<td>' + showVal(ex.horizontal) + '</td>' +
+        '<td>' + vertical + '</td>' +
+        '<td>' + statusCell + '</td>' +
+        '<td>' + (corrCount ? '<span class="tag tag-orange">' + corrCount + ' 次</span>' : '-') + '</td>' +
+      '</tr>';
+    }).join('');
+  }
+
+  $('recordTableBody').addEventListener('change', function (event) {
+    var select = event.target.closest('[data-assign-line]');
+    if (!select || !select.value) return;
+    var recordId = select.getAttribute('data-assign-line');
+    select.disabled = true;
+    api('/api/inspection/records/' + encodeURIComponent(recordId), { method: 'PATCH', body: { lineName: select.value } })
+      .then(function (record) {
+        if (state.currentSession) {
+          var index = state.currentSession.records.findIndex(function (item) { return item.id === record.id; });
+          if (index >= 0) state.currentSession.records[index] = record;
+          renderRecords();
+        }
+        toast('线路已指定为 ' + record.matchedLine.name);
+      })
+      .catch(function (err) { toast(err.message, 'error'); select.disabled = false; });
+  });
+
+  $('exportSessionBtn').addEventListener('click', function () {
+    if (!state.currentSession) return;
+    window.open('/api/inspection/sessions/' + encodeURIComponent(state.currentSession.id) + '/export.xlsx', '_blank');
   });
 
   hydrateIcons();
