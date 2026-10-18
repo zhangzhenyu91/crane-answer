@@ -231,7 +231,7 @@ async function captureRecord(rule, group, session, msg, senderId, content) {
         nickname: senderName,
         wxid: senderId,
         group: session.groupName || '',
-      });
+      }, { retries: 5 });
       const extracted = parseWorkflowOutputs(result);
       if (!extracted) {
         console.warn(`[树木排查] Dify 提取结果无法解析，原文：${content.slice(0, 60)}`);
@@ -263,8 +263,11 @@ async function captureRecord(rule, group, session, msg, senderId, content) {
         .catch((err) => console.error(`[树木排查] 「已记录」反馈发送失败：${err.message}`));
       return true;
     } catch (err) {
-      console.error(`[树木排查] 提取调用失败，记录已丢弃：${err.message}，原文：${content.slice(0, 60)}`);
+      console.error(`[树木排查] 提取调用失败（重试 5 次后仍失败），记录已丢弃：${err.message}，原文：${content.slice(0, 60)}`);
       store.removeRecord(session, record.id);
+      sendQuote(session.groupId, '记录失败', msg)
+        .then(() => console.log(`[树木排查] 「记录失败」反馈已发送（${record.id}）`))
+        .catch((sendErr) => console.error(`[树木排查] 「记录失败」反馈发送失败：${sendErr.message}`));
       return false;
     } finally {
       pendingCaptures.delete(record.id);
@@ -297,13 +300,22 @@ async function handleCorrection(rule, group, session, msg, senderId, quote) {
     return;
   }
   const senderName = await resolveDisplayName(session.groupId, senderId);
-  const result = await runWorkflow(group.correctApiKey, {
-    correction_text: correctionText,
-    quoted_text: quote.content || record.content,
-    current_record: JSON.stringify(record.extracted),
-    nickname: senderName,
-    wxid: senderId,
-  });
+  let result;
+  try {
+    result = await runWorkflow(group.correctApiKey, {
+      correction_text: correctionText,
+      quoted_text: quote.content || record.content,
+      current_record: JSON.stringify(record.extracted),
+      nickname: senderName,
+      wxid: senderId,
+    }, { retries: 5 });
+  } catch (err) {
+    console.error(`[树木排查] 更正工作流调用失败（重试 5 次后仍失败）：${err.message}`);
+    sendQuote(session.groupId, '更正失败', msg)
+      .then(() => console.log(`[树木排查] 「更正失败」反馈已发送（${record.id}）`))
+      .catch((sendErr) => console.error(`[树木排查] 「更正失败」反馈发送失败：${sendErr.message}`));
+    return;
+  }
   const outputs = parseWorkflowOutputs(result);
   if (!outputs || !outputs.action) {
     console.warn(`[树木排查] 更正工作流返回无法解析：${JSON.stringify(result).slice(0, 200)}`);

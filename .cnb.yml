@@ -20,3 +20,25 @@ main:
               -t ${CNB_DOCKER_REGISTRY}/${CNB_REPO_SLUG_LOWERCASE}:${CNB_COMMIT_SHORT} \
               -t ${TCR_CRANE_IMAGE}:latest \
               -t ${TCR_CRANE_IMAGE}:${CNB_COMMIT_SHORT} --push .
+
+# 推送版本 Tag（v*，如 v0.2.0）后触发版本发布：镜像标签为 Tag 名，并同时更新 latest。
+v*:
+  tag_push:
+    - name: 版本发布（构建并推送服务端镜像）
+      services:
+        - docker
+      imports: https://cnb.cool/j1net/j1toolkit/keys/-/blob/main/envs.yml
+      stages:
+        - name: buildx build and push（CNB + TCR）
+          timeout: 30m
+          script: |
+            set -eu
+            TCR_CRANE_IMAGE="$(dirname "${TCR_IMAGE}")/crane-answer"
+            echo "发布版本: ${CNB_BRANCH}"
+            echo "TCR 镜像: ${TCR_CRANE_IMAGE}"
+            echo "${TCR_PASSWORD}" | docker login "${TCR_IMAGE%%/*}" -u "${TCR_USERNAME}" --password-stdin
+            docker buildx build --platform linux/amd64,linux/arm64 \
+              -t ${CNB_DOCKER_REGISTRY}/${CNB_REPO_SLUG_LOWERCASE}:${CNB_BRANCH} \
+              -t ${CNB_DOCKER_REGISTRY}/${CNB_REPO_SLUG_LOWERCASE}:latest \
+              -t ${TCR_CRANE_IMAGE}:${CNB_BRANCH} \
+              -t ${TCR_CRANE_IMAGE}:latest --push .

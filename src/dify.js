@@ -1,12 +1,15 @@
 const { getSettings } = require('./settings');
 
+const DEFAULT_RETRY_DELAY_MS = 5000;
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 /**
- * 调用 Dify workflow（blocking 模式）。
- * @param {string} apiKey 该群对应的 Dify API Key
- * @param {object} inputs 工作流输入变量，键名需与 Dify 侧定义一致，原样透传
- * @returns {Promise<object>} Dify 响应体
+ * 单次调用 Dify workflow（blocking 模式）。
  */
-async function runWorkflow(apiKey, inputs) {
+async function runWorkflowOnce(apiKey, inputs) {
   const { dify } = getSettings();
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), dify.timeoutMs);
@@ -39,6 +42,30 @@ async function runWorkflow(apiKey, inputs) {
   } finally {
     clearTimeout(timer);
   }
+}
+
+/**
+ * 调用 Dify workflow（blocking 模式），inputs 原样透传。
+ * options.retries：失败后间隔重试次数（默认 0）；options.retryDelayMs：重试间隔（默认 5000）。
+ */
+async function runWorkflow(apiKey, inputs, options = {}) {
+  const retries = Number.isInteger(options.retries) && options.retries > 0 ? options.retries : 0;
+  const delayMs = Number.isInteger(options.retryDelayMs) && options.retryDelayMs > 0
+    ? options.retryDelayMs
+    : DEFAULT_RETRY_DELAY_MS;
+  let lastError;
+  for (let attempt = 0; attempt <= retries; attempt += 1) {
+    try {
+      return await runWorkflowOnce(apiKey, inputs);
+    } catch (err) {
+      lastError = err;
+      if (attempt < retries) {
+        console.warn(`[dify] 调用失败，${delayMs / 1000}s 后重试（第 ${attempt + 2} 次尝试）：${err.message}`);
+        await sleep(delayMs);
+      }
+    }
+  }
+  throw lastError;
 }
 
 module.exports = { runWorkflow };
