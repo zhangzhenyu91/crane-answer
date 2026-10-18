@@ -1,8 +1,13 @@
 name: 仓库同步
 
+# main 推送同步分支；v* tag 推送同步该 tag（触发 CNB tag_push 版本发布流水线）。
+# 本仓为纯服务端镜像仓，无客户端附件接力时序问题（与 j1toolkit 不同），
+# tag 随到随推，无需等 GitHub 构建完成后回推。
+
 on:
   push:
     branches: [main]
+    tags: ['v*']
   workflow_dispatch: {}
 
 jobs:
@@ -14,9 +19,17 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - name: 推送 main 到 CNB（不同步 tag）
+      - name: 推送 main 分支到 CNB
+        if: github.ref_type == 'branch'
         env:
           CNB_TOKEN: ${{ secrets.CNB_TOKEN }}
         run: |
           REMOTE="https://cnb:${CNB_TOKEN}@cnb.cool/j1net/j1toolkit/crane-answer.git"
           git push "$REMOTE" HEAD:main
+      - name: 推送版本 tag 到 CNB（触发 tag_push 发布流水线）
+        if: github.ref_type == 'tag'
+        env:
+          CNB_TOKEN: ${{ secrets.CNB_TOKEN }}
+        run: |
+          REMOTE="https://cnb:${CNB_TOKEN}@cnb.cool/j1net/j1toolkit/crane-answer.git"
+          git push "$REMOTE" "refs/tags/${GITHUB_REF_NAME}"

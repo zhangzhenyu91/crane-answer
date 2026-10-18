@@ -21,14 +21,20 @@ main:
               -t ${TCR_CRANE_IMAGE}:latest \
               -t ${TCR_CRANE_IMAGE}:${CNB_COMMIT_SHORT} --push .
 
-# 推送版本 Tag（v*，如 v0.2.0）后触发版本发布：镜像标签为 Tag 名，并同时更新 latest。
+# 推送版本 Tag（v*，如 v0.2.1）后触发版本发布：tag 经 GitHub Actions mirror.yml 回推到 CNB。
+# 镜像标签为 Tag 名（vX.X.X），同时更新 latest；并自动创建同名 CNB Release。
 v*:
   tag_push:
-    - name: 版本发布（构建并推送服务端镜像）
+    - name: 版本发布（镜像 + Release）
       services:
         - docker
       imports: https://cnb.cool/j1net/j1toolkit/keys/-/blob/main/envs.yml
       stages:
+        - name: 创建 Release
+          type: git:release
+          options:
+            name: ${CNB_BRANCH}
+            description: ${CNB_TAG_MESSAGE}
         - name: buildx build and push（CNB + TCR）
           timeout: 30m
           script: |

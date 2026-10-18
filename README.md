@@ -18,6 +18,14 @@ npm start        # 或开发模式 npm run dev
 
 Docker 部署见 `Dockerfile` 与 `docker/docker-compose.yml`，数据持久化在 `data/` 目录（挂载卷）。
 
+## 发版流程
+
+日常开发只本地提交，不推送、不打 tag。发版（需明确指令）：
+
+1. `package.json` 升版本号并提交；
+2. `git push origin main`（同步分支到 CNB，构建 `latest` + commit 短哈希标签镜像）；
+3. `git tag vX.X.X && git push origin vX.X.X`（GitHub Actions `mirror.yml` 把 tag 回推到 CNB → CNB `tag_push` 流水线构建镜像：标签为 **Tag 名**（如 `v0.2.2`）+ 更新 `latest`，推 CNB 制品库与腾讯云 TCR，并自动创建同名 CNB Release）。
+
 ## 环境变量
 
 | 变量 | 说明 | 默认值 |
