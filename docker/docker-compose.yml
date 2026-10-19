@@ -1,8 +1,17 @@
+# 统一容器网络：j1toolkit（外部网络，须先 docker network create j1toolkit）。
+# 与壹匣（j1toolkit 容器）同网络后按容器名互通，crane-answer 无需暴露公网，
+# 推送地址配置 YIXIA_BASE_URL=http://j1toolkit（壹匣 PORT 自定义时带端口）。
+networks:
+  j1toolkit:
+    external: true
+
 services:
   crane-answer:
     image: ${IMAGE:?请在 .env 中配置 IMAGE（镜像完整地址，含版本标签）}
     container_name: crane-answer
     restart: always
+    networks:
+      - j1toolkit
     ports:
       - "${PORT:-3000}:${PORT:-3000}"
     env_file:

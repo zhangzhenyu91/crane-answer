@@ -198,6 +198,15 @@ function markSessionSent(sessionId) {
   return session;
 }
 
+/**
+ * 取该群最近一次已成功发送汇总 xlsx 的会话（按 sentAt 倒序），用于「推送壹匣」指令定位。
+ */
+function findLatestSentSession(groupId) {
+  return getState().sessions
+    .filter((item) => item.groupId === groupId && item.sentAt)
+    .sort((a, b) => b.sentAt - a.sentAt)[0] || null;
+}
+
 function listSessions(filter = {}) {
   const list = getState().sessions
     .filter((item) => (!filter.groupId || item.groupId === filter.groupId)
@@ -216,6 +225,9 @@ function listSessions(filter = {}) {
     endedAt: item.endedAt,
     endReason: item.endReason,
     sentAt: item.sentAt || null,
+    pushedAt: item.pushedAt || null,
+    pushMode: item.pushMode || '',
+    pushResult: item.pushResult || '',
     status: item.status,
     recordCount: item.records.length,
     pendingCount: item.records.filter((rec) => rec.matchStatus !== 'ok').length,
@@ -291,6 +303,7 @@ module.exports = {
   markHandled,
   saveSession,
   markSessionSent,
+  findLatestSentSession,
   listSessions,
   getSession,
   deleteSession,

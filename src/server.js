@@ -22,6 +22,7 @@ const lines = require('./lines');
 const store = require('./inspection/store');
 const { buildSessionWorkbook, exportFileName } = require('./inspection/export');
 const { sendSessionXlsx } = require('./inspection/deliver');
+const { pushSession } = require('./inspection/push');
 
 const SESSION_COOKIE = 'crane_session';
 const SESSION_TTL_MS = 12 * 60 * 60 * 1000;
@@ -238,6 +239,18 @@ function createApp({ client }) {
     if (!session) return res.status(404).json({ ok: false, error: { message: '会话不存在' } });
     if (!session.records.length) return res.status(400).json({ ok: false, error: { message: '会话没有记录，无法发送' } });
     const result = await sendSessionXlsx(session);
+    return ok(res, result);
+  }));
+  app.post('/api/inspection/sessions/:id/push', asyncRoute(async (req, res) => {
+    const session = store.getSession(req.params.id);
+    if (!session) return res.status(404).json({ ok: false, error: { message: '会话不存在' } });
+    const mode = String((req.body && req.body.mode) || '');
+    if (!['direct', 'staging'].includes(mode)) {
+      return res.status(400).json({ ok: false, error: { message: '推送模式仅支持 direct / staging' } });
+    }
+    const result = await pushSession(session, mode, { wxid: '', name: `管理端 ${req.session.username}` },
+      String((req.body && req.body.review_note) || ''));
+    if (!result.ok) return res.status(502).json({ ok: false, error: { message: result.message } });
     return ok(res, result);
   }));
 

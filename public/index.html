@@ -225,8 +225,10 @@
         </div>
         <div class="form-grid" id="treeWatchFields" hidden style="margin-top:14px">
           <div class="form-field"><label for="ruleStartKeywords">开始关键词</label><input class="input" id="ruleStartKeywords" placeholder="开始记录树障, 开始排查" autocomplete="off"><p class="field-hint">逗号分隔；@监听账号且内容含任一关键词即开始记录会话。</p></div>
-          <div class="form-field"><label for="ruleEndKeywords">结束关键词</label><input class="input" id="ruleEndKeywords" placeholder="结束, 汇总" autocomplete="off"><p class="field-hint">@监听账号且内容含任一关键词即结束会话。</p></div>
+          <div class="form-field"><label for="ruleSummaryKeywords">汇总关键词</label><input class="input" id="ruleSummaryKeywords" placeholder="汇总" autocomplete="off"><p class="field-hint">逗号分隔；@监听账号且内容含任一关键词即发送汇总 xlsx 到群，会话不结束、可再次汇总。</p></div>
+          <div class="form-field"><label for="ruleEndKeywords">结束关键词</label><input class="input" id="ruleEndKeywords" placeholder="结束, 结束记录" autocomplete="off"><p class="field-hint">@监听账号且内容含任一关键词即结束会话；已汇总过的会话结束时不再重复发表。</p></div>
           <div class="form-field"><label for="ruleSessionTimeout">会话超时（小时）</label><input class="input" id="ruleSessionTimeout" type="number" min="1" max="72" step="1" value="12"><p class="field-hint">自最后一条捕获起超时无新内容，会话自动结束（1-72）。</p></div>
+          <div class="form-field"><label for="ruleTeamName">归属班组（壹匣）</label><input class="input" id="ruleTeamName" maxlength="32" placeholder="如：检修一班" autocomplete="off"><p class="field-hint">「推送壹匣 / 推送暂存」时作为 team_name 上报；留空则该规则会话无法推送。</p></div>
         </div>
       </section>
       <section class="form-section">
@@ -284,7 +286,7 @@
         </table>
       </div>
     </div>
-    <div class="modal-footer"><button class="btn" data-close="sessionMask" type="button">关闭</button><button class="btn btn-primary" id="exportSessionBtn" type="button">导出 xlsx</button></div>
+    <div class="modal-footer"><span class="cell-sub" id="sessionPushStatus" style="margin-right:auto"></span><button class="btn" data-close="sessionMask" type="button">关闭</button><button class="btn" id="pushStagingBtn" type="button">报送修改</button><button class="btn btn-primary" id="pushDirectBtn" type="button">报送</button><button class="btn btn-primary" id="exportSessionBtn" type="button">导出 xlsx</button></div>
   </section>
 </div>
 

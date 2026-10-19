@@ -140,4 +140,12 @@ function exportFileName(session) {
   return `通道树木排查记录_${group}_${formatFindDate(session.startedAt) || '未命名'}.xlsx`;
 }
 
-module.exports = { buildSessionWorkbook, exportFileName, HEADERS };
+module.exports = {
+  buildSessionWorkbook,
+  exportFileName,
+  HEADERS,
+  formatSection,
+  formatVertical,
+  formatSideDistance,
+  resolveFinderName,
+};

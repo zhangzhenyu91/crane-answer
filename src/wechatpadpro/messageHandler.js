@@ -1,9 +1,11 @@
 const { getSettings } = require('../settings');
+const config = require('../config');
 const { resolveDisplayName, resolveWxidByName } = require('./memberResolver');
 const { runWorkflow } = require('../dify');
 const store = require('../inspection/store');
 const { matchLine } = require('../lines');
 const { sendSessionXlsx } = require('../inspection/deliver');
+const { pushSession } = require('../inspection/push');
 const { sendQuote, sendText } = require('./sender');
 
 /**
@@ -237,6 +239,11 @@ function stripMentions(content) {
   return String(content || '').replace(/@[^\s@]+/g, ' ').replace(/\s+/g, ' ').trim();
 }
 
+// 「报送修改」备注提取专用：仅剥 @ 提及、压缩空格/制表符，保留备注内换行
+function stripMentionsPreserveNewlines(content) {
+  return String(content || '').replace(/@[^\s@]+/g, ' ').replace(/[^\S\n]+/g, ' ').trim();
+}
+
 function parseWorkflowOutputs(result) {
   const outputs = (result && result.data && result.data.outputs) || {};
   let data = outputs;
@@ -427,6 +434,42 @@ async function handleCorrection(rule, group, session, msg, senderId, quote) {
   console.log(`[树木排查] 更正工作流判定无关（action=${outputs.action}）：${correctionText.slice(0, 60)}`);
 }
 
+/* ------------------------- 报送壹匣指令（treeWatch） ------------------------- */
+
+/**
+ * 群内 @监听账号 的报送指令：「报送」= 审核通过直接入库（direct）；「报送修改」+备注 = 进壹匣暂存区（staging）。
+ * 两种模式推送成功均结束会话（报送即闭环，避免下次排查记录混入旧会话；修改在壹匣暂存区完成）。
+ * 推送对象为该群最近一次已发汇总 xlsx 的会话；回执统一用纯文本 sendText。
+ */
+async function handleYixiaPushCommand(conversationId, senderId, mode, reviewNote) {
+  const reply = (text) => sendText(conversationId, text)
+    .catch((err) => console.error(`[报送壹匣] 回执发送失败：${err.message}`));
+  if (!config.yixia.baseUrl || !config.yixia.token) {
+    await reply('未配置壹匣推送');
+    return;
+  }
+  const session = store.findLatestSentSession(conversationId);
+  if (!session) {
+    await reply('暂无可推送的排查汇总');
+    return;
+  }
+  if (!session.records.some((item) => item.status === 'active')) {
+    await reply('会话无有效记录');
+    return;
+  }
+  const senderName = await resolveDisplayName(conversationId, senderId);
+  const result = await pushSession(session, mode, { wxid: senderId, name: senderName }, reviewNote)
+    .catch((err) => ({ ok: false, message: err.message }));
+  if (!result.ok) {
+    await reply(`报送失败：${result.message}`);
+    return;
+  }
+  store.endSession(session.id, 'reported');
+  console.log(`[报送壹匣] 报送成功（${mode}），会话 ${session.id} 已结束（reported）`);
+  const suffix = mode === 'staging' ? '，备注已随表提交' : '';
+  await reply(`${result.message}（${senderName}）${suffix}`);
+}
+
 async function handleTreeWatchMessage(msg, rule, group, conversationId, senderId, content) {
   const { wechat } = getSettings();
   const botWxid = (wechat.botWxid || '').trim();
@@ -435,6 +478,15 @@ async function handleTreeWatchMessage(msg, rule, group, conversationId, senderId
 
   if (await botMentioned(msg, content, conversationId, wechat)) {
     const commandText = stripMentions(content);
+    // 报送指令锚定判定（全等/前缀），优先于关键词包含判定，
+    // 避免备注文本里混入「汇总」「结束」等关键词被误吞
+    const reportText = stripMentionsPreserveNewlines(content);
+    if (reportText === '报送' || reportText.startsWith('报送修改')) {
+      const mode = reportText === '报送' ? 'direct' : 'staging';
+      const reviewNote = mode === 'staging' ? reportText.slice('报送修改'.length).trim() : '';
+      await handleYixiaPushCommand(conversationId, senderId, mode, reviewNote);
+      return;
+    }
     if ((rule.startKeywords || []).some((k) => commandText.includes(k))) {
       const starterName = await resolveDisplayName(conversationId, senderId);
       const { session, created } = store.startSession({
@@ -454,6 +506,32 @@ async function handleTreeWatchMessage(msg, rule, group, conversationId, senderId
         .catch((err) => console.error(`[树木排查] 「开始记录」反馈发送失败：${err.message}`));
       return;
     }
+    // 汇总是独立步骤指令：发表后不结束会话，可继续捕获/更正并再次汇总
+    const summaryKeywords = Array.isArray(rule.summaryKeywords) && rule.summaryKeywords.length ? rule.summaryKeywords : ['汇总'];
+    if (summaryKeywords.some((k) => commandText.includes(k))) {
+      const session = store.getActiveSession(conversationId);
+      if (session) {
+        const pendingCount = [...pendingCaptures.values()].filter((item) => item.sessionId === session.id).length;
+        if (pendingCount) console.log(`[树木排查] 汇总指令：等待 ${pendingCount} 条进行中的提取完成…`);
+        await flushSessionCaptures(session.id);
+        const current = store.getSession(session.id);
+        if (current.records.length) {
+          try {
+            const { fileName, bytes } = await sendSessionXlsx(current);
+            console.log(`[树木排查] 汇总已发送至群：${fileName}（${bytes} 字节），会话 ${current.id} 继续记录中`);
+            sendQuote(conversationId, '汇总表已发送，会话仍在记录中；审核无误请 @我 发送「报送」，需修改请发送「报送修改」+备注', msg)
+              .catch((err) => console.error(`[树木排查] 「汇总已发送」回执发送失败：${err.message}`));
+          } catch (err) {
+            console.error(`[树木排查] 汇总发送失败：${err.stack || err}`);
+          }
+        } else {
+          console.log('[树木排查] 会话无记录，跳过群内发送');
+        }
+      } else {
+        console.log(`[树木排查] ${group.name} 无进行中的会话，忽略汇总指令`);
+      }
+      return;
+    }
     if ((rule.endKeywords || []).some((k) => commandText.includes(k))) {
       const session = store.getActiveSession(conversationId);
       if (session) {
@@ -463,7 +541,9 @@ async function handleTreeWatchMessage(msg, rule, group, conversationId, senderId
         store.endSession(session.id, 'keyword');
         const finalSession = store.getSession(session.id);
         console.log(`[树木排查] 会话结束：${group.name}（${conversationId}），共捕获 ${finalSession.records.length} 条`);
-        if (finalSession.records.length) {
+        if (finalSession.sentAt) {
+          console.log('[树木排查] 会话已汇总发表过，结束不再重复发送');
+        } else if (finalSession.records.length) {
           sendSessionXlsx(finalSession)
             .then(({ fileName, bytes }) => console.log(`[树木排查] 汇总已发送至群：${fileName}（${bytes} 字节）`))
             .catch((err) => console.error(`[树木排查] 汇总发送失败：${err.stack || err}`));

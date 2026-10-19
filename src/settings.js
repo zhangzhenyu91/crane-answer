@@ -128,8 +128,10 @@ function getPublicState() {
       trigger: rule.trigger,
       action: rule.action,
       startKeywords: Array.isArray(rule.startKeywords) ? rule.startKeywords : [],
+      summaryKeywords: Array.isArray(rule.summaryKeywords) ? rule.summaryKeywords : [],
       endKeywords: Array.isArray(rule.endKeywords) ? rule.endKeywords : [],
       sessionTimeoutHours: rule.sessionTimeoutHours || 12,
+      teamName: rule.teamName || '',
       groups: (rule.groups || []).map((group) => ({
         id: group.id,
         name: group.name,
@@ -281,12 +283,23 @@ function buildRule(input, existing) {
     const timeoutHours = Number(Object.prototype.hasOwnProperty.call(data, 'sessionTimeoutHours') ? data.sessionTimeoutHours : existing ? existing.sessionTimeoutHours : 12);
     if (!Number.isInteger(timeoutHours) || timeoutHours < 1 || timeoutHours > 72) throw createError('会话超时必须是 1-72 的整数小时');
     rule.startKeywords = normalizeKeywords(data.startKeywords, existing && existing.startKeywords && existing.startKeywords.length ? existing.startKeywords : ['开始记录树障', '开始记录', '开始排查']);
-    rule.endKeywords = normalizeKeywords(data.endKeywords, existing && existing.endKeywords && existing.endKeywords.length ? existing.endKeywords : ['结束', '汇总', '结束记录']);
+    rule.summaryKeywords = normalizeKeywords(data.summaryKeywords, existing && existing.summaryKeywords && existing.summaryKeywords.length ? existing.summaryKeywords : ['汇总']);
+    rule.endKeywords = normalizeKeywords(data.endKeywords, existing && existing.endKeywords && existing.endKeywords.length ? existing.endKeywords : ['结束', '结束记录']);
+    // 向后兼容：「汇总」已拆为独立步骤指令，旧配置 endKeywords 中混入的汇总词随本次保存剔除
+    rule.endKeywords = rule.endKeywords.filter((k) => !rule.summaryKeywords.includes(k));
+    if (!rule.endKeywords.length) rule.endKeywords = ['结束', '结束记录'];
     rule.sessionTimeoutHours = timeoutHours;
+    // 归属班组（壹匣推送 team_name）：仅树木排查规则可配，可空，最长 32
+    const teamName = String(Object.prototype.hasOwnProperty.call(data, 'teamName') ? data.teamName : (existing && existing.teamName) || '').trim();
+    if (teamName.length > 32) throw createError('归属班组不能超过 32 个字符');
+    rule.teamName = teamName;
   } else {
+    if (String(data.teamName || '').trim()) throw createError('仅树木排查（会话捕获）规则支持配置归属班组');
     if (existing && Array.isArray(existing.startKeywords)) rule.startKeywords = existing.startKeywords;
+    if (existing && Array.isArray(existing.summaryKeywords)) rule.summaryKeywords = existing.summaryKeywords;
     if (existing && Array.isArray(existing.endKeywords)) rule.endKeywords = existing.endKeywords;
     if (existing && existing.sessionTimeoutHours) rule.sessionTimeoutHours = existing.sessionTimeoutHours;
+    if (existing && existing.teamName) rule.teamName = existing.teamName;
   }
   return rule;
 }

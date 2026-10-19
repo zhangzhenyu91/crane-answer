@@ -232,8 +232,10 @@
     $('ruleName').value = rule ? rule.name : '';
     $('ruleTrigger').value = rule && rule.trigger === 'treeWatch' ? 'treeWatch' : 'location';
     $('ruleStartKeywords').value = rule && rule.startKeywords && rule.startKeywords.length ? rule.startKeywords.join(', ') : '开始记录树障, 开始记录, 开始排查';
-    $('ruleEndKeywords').value = rule && rule.endKeywords && rule.endKeywords.length ? rule.endKeywords.join(', ') : '结束, 汇总, 结束记录';
+    $('ruleSummaryKeywords').value = rule && rule.summaryKeywords && rule.summaryKeywords.length ? rule.summaryKeywords.join(', ') : '汇总';
+    $('ruleEndKeywords').value = rule && rule.endKeywords && rule.endKeywords.length ? rule.endKeywords.join(', ') : '结束, 结束记录';
     $('ruleSessionTimeout').value = rule && rule.sessionTimeoutHours ? rule.sessionTimeoutHours : 12;
+    $('ruleTeamName').value = rule && rule.teamName ? rule.teamName : '';
     var enabled = rule ? rule.enabled : true;
     $('ruleEnabledSwitch').classList.toggle('on', enabled);
     $('ruleEnabledSwitch').setAttribute('aria-checked', String(enabled));
@@ -340,12 +342,16 @@
           return raw.split(/[,，]/).map(function (item) { return item.trim(); }).filter(Boolean);
         };
         payload.startKeywords = splitKeywords($('ruleStartKeywords').value);
+        payload.summaryKeywords = splitKeywords($('ruleSummaryKeywords').value);
         payload.endKeywords = splitKeywords($('ruleEndKeywords').value);
         if (!payload.startKeywords.length) throw new Error('请填写开始关键词');
+        if (!payload.summaryKeywords.length) throw new Error('请填写汇总关键词');
         if (!payload.endKeywords.length) throw new Error('请填写结束关键词');
         var timeout = Number($('ruleSessionTimeout').value);
         if (!Number.isInteger(timeout) || timeout < 1 || timeout > 72) throw new Error('会话超时应在 1–72 小时之间');
         payload.sessionTimeoutHours = timeout;
+        payload.teamName = $('ruleTeamName').value.trim();
+        if (payload.teamName.length > 32) throw new Error('归属班组不能超过 32 个字符');
       }
       var editing = Boolean(state.editingRuleId);
       var data = await api(editing ? '/api/rules/' + encodeURIComponent(state.editingRuleId) : '/api/rules', {
@@ -601,7 +607,7 @@
     return value == null || String(value).trim() === '' ? '' : esc(String(value).trim());
   }
 
-  var END_REASONS = { keyword: '指令结束', timeout: '超时结束', manual: '手动结束' };
+  var END_REASONS = { keyword: '指令结束', timeout: '超时结束', manual: '手动结束', reported: '已报送结束' };
 
   async function loadSessions(showFeedback) {
     var data = await api('/api/inspection/sessions');
@@ -621,6 +627,10 @@
         ? '<span class="tag tag-green">进行中</span>'
         : '<span class="tag tag-gray">已结束</span><div class="cell-sub">' + esc(END_REASONS[session.endReason] || '已结束') + '</div>';
       if (session.sentAt) statusCell += '<div class="cell-sub"><span class="tag tag-blue">已发群 ' + fmtTime(session.sentAt).slice(5) + '</span></div>';
+      if (session.pushedAt) {
+        var pushOk = String(session.pushResult || '').indexOf('ok') === 0;
+        statusCell += '<div class="cell-sub"><span class="tag ' + (pushOk ? 'tag-green' : 'tag-orange') + '">' + (session.pushMode === 'staging' ? '已暂存' : '已入库') + ' ' + fmtTime(session.pushedAt).slice(5) + '</span></div>';
+      }
       var countCell = '<span class="cell-main">' + session.recordCount + '</span>'
         + (session.pendingCount ? '<div class="cell-sub"><span class="tag tag-orange">待确认 ' + session.pendingCount + '</span></div>' : '');
       var actions = '<button class="text-btn primary" data-session-action="detail" data-id="' + esc(session.id) + '" type="button">详情</button>'
@@ -697,6 +707,9 @@
     if (!session) return;
     $('sessionModalTitle').textContent = (session.groupName || '会话') + ' · 记录明细';
     $('sessionModalSub').textContent = '发起人 ' + (session.startedByName || '-') + ' · 开始于 ' + fmtTime(session.startedAt) + ' · 共 ' + session.records.length + ' 条';
+    $('sessionPushStatus').textContent = session.pushedAt
+      ? (session.pushMode === 'staging' ? '报送暂存' : '报送入库') + ' ' + fmtTime(session.pushedAt) + (session.pushResult ? ' · ' + session.pushResult : '')
+      : '';
     if (!session.records.length) {
       $('recordTableBody').innerHTML = '<tr><td colspan="11"><div class="empty"><p>该会话没有捕获到记录</p></div></td></tr>';
       return;
@@ -753,6 +766,26 @@
     if (!state.currentSession) return;
     window.open('/api/inspection/sessions/' + encodeURIComponent(state.currentSession.id) + '/export.xlsx', '_blank');
   });
+
+  function pushCurrentSession(mode, btn) {
+    if (!state.currentSession) return;
+    var reviewNote = '';
+    if (mode === 'staging') {
+      var input = window.prompt('请输入审核备注（可留空，直接确定 = 无备注）：', '');
+      if (input === null) return;
+      reviewNote = input.trim();
+    }
+    busy(btn, async function () {
+      var id = state.currentSession.id;
+      var result = await api('/api/inspection/sessions/' + encodeURIComponent(id) + '/push', { method: 'POST', body: { mode: mode, review_note: reviewNote } });
+      state.currentSession = await api('/api/inspection/sessions/' + encodeURIComponent(id));
+      renderRecords();
+      loadSessions(false);
+      toast(result.message || '报送完成');
+    });
+  }
+  $('pushDirectBtn').addEventListener('click', function () { pushCurrentSession('direct', this); });
+  $('pushStagingBtn').addEventListener('click', function () { pushCurrentSession('staging', this); });
 
   hydrateIcons();
   document.querySelectorAll('.confirm-icon').forEach(function (el) { el.innerHTML = icon('warning', 24); });

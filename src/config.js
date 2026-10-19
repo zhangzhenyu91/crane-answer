@@ -14,5 +14,10 @@ module.exports = {
   dataDir: path.resolve(rootDir, process.env.DATA_DIR || 'data'),
   adminUsername: process.env.ADMIN_USERNAME || 'admin',
   adminPassword: process.env.ADMIN_PASSWORD || 'Admin@123',
+  // 壹匣后端对接（树障隐患记录直推）；任一为空则推送不可用
+  yixia: {
+    baseUrl: String(process.env.YIXIA_BASE_URL || '').replace(/\/+$/, ''),
+    token: String(process.env.YIXIA_INGEST_TOKEN || '').trim(),
+  },
   legacy: process.env,
 };
