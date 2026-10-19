@@ -57,4 +57,23 @@ async function resolveDisplayName(groupId, wxid) {
   }
 }
 
-module.exports = { resolveDisplayName };
+/**
+ * 反解析：显示名 → wxid（手动别名 > 群成员接口）。用于撤回事件解析撤回人。
+ */
+async function resolveWxidByName(groupId, name) {
+  if (!name) return '';
+  const { aliases } = getSettings();
+  const alias = aliases.find((item) => item.name === name);
+  if (alias) return alias.wxid;
+  try {
+    const members = await getGroupMembers(groupId);
+    for (const [wxid, display] of members) {
+      if (display === name) return wxid;
+    }
+  } catch (err) {
+    console.warn(`[成员解析] 反查失败：${err.message}`);
+  }
+  return '';
+}
+
+module.exports = { resolveDisplayName, resolveWxidByName };

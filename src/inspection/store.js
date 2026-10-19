@@ -243,6 +243,29 @@ function findRecord(recordId) {
   return null;
 }
 
+/**
+ * 撤回消息定位记录：推送的撤回事件不含被撤消息 ID，只能启发式匹配——
+ * 优先撤回人在时间窗内最近的一条记录；群主撤回他人消息等场景兜底为该群时间窗内最近一条。
+ */
+function findRecallTarget(groupId, senderId, windowSec = 600) {
+  const now = Math.floor(Date.now() / 1000);
+  const sessions = getState().sessions
+    .filter((item) => item.groupId === groupId)
+    .sort((a, b) => (a.status === 'active' ? 0 : 1) - (b.status === 'active' ? 0 : 1) || b.lastActivityAt - a.lastActivityAt);
+  let fallback = null;
+  for (const session of sessions) {
+    const candidates = session.records
+      .filter((item) => now - item.capturedAt <= windowSec)
+      .sort((a, b) => b.capturedAt - a.capturedAt);
+    if (senderId) {
+      const own = candidates.find((item) => item.senderId === senderId);
+      if (own) return { session, record: own, matchedBy: 'sender' };
+    }
+    if (!fallback && candidates.length) fallback = { session, record: candidates[0], matchedBy: 'latest' };
+  }
+  return fallback;
+}
+
 function assignRecordLine(recordId, matchedLine) {
   const found = findRecord(recordId);
   if (!found) return null;
@@ -272,5 +295,6 @@ module.exports = {
   getSession,
   deleteSession,
   findRecord,
+  findRecallTarget,
   assignRecordLine,
 };

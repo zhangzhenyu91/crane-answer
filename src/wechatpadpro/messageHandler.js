@@ -1,10 +1,10 @@
 const { getSettings } = require('../settings');
-const { resolveDisplayName } = require('./memberResolver');
+const { resolveDisplayName, resolveWxidByName } = require('./memberResolver');
 const { runWorkflow } = require('../dify');
 const store = require('../inspection/store');
 const { matchLine } = require('../lines');
 const { sendSessionXlsx } = require('../inspection/deliver');
-const { sendQuote } = require('./sender');
+const { sendQuote, sendText } = require('./sender');
 
 /**
  * 群消息里，发送者通常在 sender_id / reply_context.from_user_id，
@@ -64,6 +64,65 @@ async function handleLocationTrigger(msg, conversationId, difyApiKey, ruleName) 
     ` 状态=${(result.data && result.data.status) || '-'} 输出=${JSON.stringify(outputs) || '-'}`
   );
   return extracted;
+}
+
+/* ------------------------- 撤回识别（treeWatch） ------------------------- */
+
+const RECALL_WINDOW_SEC = 180;
+
+function isRecallEvent(msg) {
+  return String(msg.kind) === 'system'
+    && (Number(msg.type) === 10002 || (msg.system && msg.system.category === 'message_recalled'));
+}
+
+/**
+ * 撤回先于记录落库到达的竞态：暂存未命中的撤回（按群+撤回人），
+ * 待 pending 记录出现时补判。方向性条件：撤回时间 ≥ 报送时间，
+ * 避免"先撤回闲聊再报送"误删新记录。
+ */
+const pendingRecalls = new Map();
+
+function stashPendingRecall(groupId, senderId, at) {
+  if (!senderId) return;
+  const list = (pendingRecalls.get(groupId) || []).filter((item) => at - item.at <= RECALL_WINDOW_SEC);
+  list.push({ senderId, at });
+  pendingRecalls.set(groupId, list);
+}
+
+function popMatchingRecall(groupId, record) {
+  const list = pendingRecalls.get(groupId);
+  if (!list) return false;
+  const idx = list.findIndex((item) => item.senderId === record.senderId
+    && item.at >= record.capturedAt
+    && item.at - record.capturedAt <= RECALL_WINDOW_SEC);
+  if (idx < 0) return false;
+  list.splice(idx, 1);
+  return true;
+}
+
+/**
+ * 撤回事件处理：实时推送的撤回系统消息不含被撤消息 ID（已实测确认），
+ * 启发式删除记录——撤回人时间窗内最近一条，兜底群内时间窗内最近一条；
+ * 删除后群内文本反馈「已删除」（无法引用已撤回的消息）。
+ */
+async function handleRecall(msg, group, conversationId) {
+  let recallerWxid = msg.sender_id && !String(msg.sender_id).endsWith('@chatroom') ? String(msg.sender_id) : '';
+  if (!recallerWxid) {
+    const m = String(msg.content || '').match(/^["“](.+?)["”]\s*撤回了一条消息/);
+    if (m) recallerWxid = await resolveWxidByName(conversationId, m[1]);
+  }
+  const target = store.findRecallTarget(conversationId, recallerWxid, RECALL_WINDOW_SEC);
+  if (!target) {
+    console.log(`[树木排查] 撤回事件未命中任何记录（${group.name}，撤回人=${recallerWxid || '-'}），暂存待补判`);
+    stashPendingRecall(conversationId, recallerWxid, Number(msg.created_at) || Math.floor(Date.now() / 1000));
+    return;
+  }
+  store.removeRecord(target.session, target.record.id);
+  console.log(
+    `[树木排查] 记录 ${target.record.id} 因消息撤回已删除（匹配方式=${target.matchedBy}）：${target.record.content.slice(0, 40)}`
+  );
+  sendText(conversationId, '已删除')
+    .catch((err) => console.error(`[树木排查] 「已删除」反馈发送失败：${err.message}`));
 }
 
 /* ------------------------- 树木排查会话（treeWatch） ------------------------- */
@@ -224,6 +283,13 @@ async function captureRecord(rule, group, session, msg, senderId, content) {
     capturedAt: Number(msg.created_at) || Math.floor(Date.now() / 1000),
     pending: true,
   });
+  if (popMatchingRecall(session.groupId, record)) {
+    store.removeRecord(session, record.id);
+    console.log(`[树木排查] 记录落库前检测到对应撤回，已删除且不再提取：${content.slice(0, 40)}`);
+    sendText(session.groupId, '已删除')
+      .catch((err) => console.error(`[树木排查] 「已删除」反馈发送失败：${err.message}`));
+    return;
+  }
   const task = (async () => {
     try {
       const result = await runWorkflow(group.apiKey, {
@@ -232,6 +298,10 @@ async function captureRecord(rule, group, session, msg, senderId, content) {
         wxid: senderId,
         group: session.groupName || '',
       }, { retries: 5 });
+      if (!session.records.some((item) => item.id === record.id)) {
+        console.log(`[树木排查] 记录 ${record.id} 在提取期间已被撤回删除，跳过落库与「已记录」反馈`);
+        return false;
+      }
       const extracted = parseWorkflowOutputs(result);
       if (!extracted) {
         console.warn(`[树木排查] Dify 提取结果无法解析，原文：${content.slice(0, 60)}`);
@@ -448,6 +518,11 @@ function handleMessage(msg) {
       handleLocationTrigger(msg, conversationId, group.apiKey, rule.name)
         .catch((err) => console.error(`[触发] 规则“${rule.name}”处理失败：${err.stack || err}`));
     } else if (rule.trigger === 'treeWatch' && rule.action === 'dify') {
+      if (isRecallEvent(msg)) {
+        handleRecall(msg, group, conversationId)
+          .catch((err) => console.error(`[树木排查] 规则“${rule.name}”撤回处理失败：${err.stack || err}`));
+        continue;
+      }
       handleTreeWatchMessage(msg, rule, group, conversationId, senderId, content)
         .catch((err) => console.error(`[树木排查] 规则“${rule.name}”处理失败：${err.stack || err}`));
     }

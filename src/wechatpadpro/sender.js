@@ -76,4 +76,16 @@ async function sendQuote(toWxid, text, quotedMsg) {
   });
 }
 
-module.exports = { sendFile, sendQuote };
+/**
+ * 发送文本消息到群聊（或私聊）。
+ * @param {string} toWxid 目标 wxid，群聊填群 ID（xxx@chatroom）
+ * @param {string} content 文本内容
+ */
+async function sendText(toWxid, content) {
+  return postMsgApi('/v1/Msg/SendTxt', {
+    Content: content,
+    ToWxid: toWxid,
+  });
+}
+
+module.exports = { sendFile, sendQuote, sendText };
