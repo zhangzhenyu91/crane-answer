@@ -1,5 +1,6 @@
 const http = require('http');
 const path = require('path');
+const fs = require('fs');
 const crypto = require('crypto');
 const express = require('express');
 const config = require('./config');
@@ -223,6 +224,18 @@ function createApp({ client }) {
     const record = store.assignRecordLine(req.params.id, line);
     if (!record) return res.status(404).json({ ok: false, error: { message: '记录不存在' } });
     return ok(res, record);
+  });
+  // 辅证照片本体读取（管理页记录明细缩略图用；文件名白名单校验防路径穿越）
+  app.get('/api/inspection/attachments/:name', (req, res) => {
+    const name = String(req.params.name || '');
+    if (!/^evi-\d+\.(jpg|png)$/.test(name)) {
+      return res.status(400).json({ ok: false, error: { message: '非法附件名' } });
+    }
+    const abs = path.join(config.dataDir, 'attachments', name);
+    if (!fs.existsSync(abs)) return res.status(404).json({ ok: false, error: { message: '附件不存在' } });
+    res.set('Content-Type', name.endsWith('.png') ? 'image/png' : 'image/jpeg');
+    res.set('Cache-Control', 'private, max-age=300');
+    return fs.createReadStream(abs).pipe(res);
   });
   app.get('/api/inspection/sessions/:id/export.xlsx', asyncRoute(async (req, res) => {
     const session = store.getSession(req.params.id);

@@ -125,6 +125,7 @@ function addRecord(session, record) {
     status: record.pending ? 'pending' : 'active',
     handledNote: record.handledNote || '',
     correctionHistory: [],
+    photos: [], // 辅证照片：[{ id, msgId(图片消息 svr_id), senderId, capturedAt, file(相对 dataDir), bytes }]
   };
   session.records.push(entry);
   touchSession(session);
@@ -140,6 +141,35 @@ function finalizeRecord(record, fields) {
 function removeRecord(session, recordId) {
   session.records = session.records.filter((item) => item.id !== recordId);
   persist();
+}
+
+/**
+ * 挂接辅证照片到记录（photos 字段防御初始化：兼容旧数据无该字段）。
+ * photo: { msgId, senderId, capturedAt, file, bytes }，返回挂接条目。
+ */
+function addPhoto(record, photo) {
+  if (!Array.isArray(record.photos)) record.photos = [];
+  const entry = {
+    id: id('pho'),
+    msgId: photo.msgId || '',
+    senderId: photo.senderId || '',
+    capturedAt: photo.capturedAt || Math.floor(Date.now() / 1000),
+    file: photo.file || '',
+    bytes: Number(photo.bytes) || 0,
+  };
+  record.photos.push(entry);
+  persist();
+  return entry;
+}
+
+/** 按照片 id 或来源图片消息 svr_id 摘除记录的辅证照片，返回被摘条目（文件清理由调用方负责） */
+function removePhoto(record, key) {
+  if (!Array.isArray(record.photos)) return null;
+  const idx = record.photos.findIndex((item) => item.id === key || (key && item.msgId === key));
+  if (idx < 0) return null;
+  const [removed] = record.photos.splice(idx, 1);
+  persist();
+  return removed;
 }
 
 function findRecordByMsgId(session, msgId) {
@@ -297,6 +327,8 @@ module.exports = {
   addRecord,
   finalizeRecord,
   removeRecord,
+  addPhoto,
+  removePhoto,
   findRecordByMsgId,
   findRecordByContent,
   applyCorrection,

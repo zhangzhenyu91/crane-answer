@@ -711,7 +711,7 @@
       ? (session.pushMode === 'staging' ? '报送暂存' : '报送入库') + ' ' + fmtTime(session.pushedAt) + (session.pushResult ? ' · ' + session.pushResult : '')
       : '';
     if (!session.records.length) {
-      $('recordTableBody').innerHTML = '<tr><td colspan="11"><div class="empty"><p>该会话没有捕获到记录</p></div></td></tr>';
+      $('recordTableBody').innerHTML = '<tr><td colspan="12"><div class="empty"><p>该会话没有捕获到记录</p></div></td></tr>';
       return;
     }
     $('recordTableBody').innerHTML = session.records.map(function (rec) {
@@ -729,6 +729,14 @@
         ? '<span class="tag tag-blue">解析中</span>'
         : rec.handledNote ? '<span class="tag tag-green">' + esc(rec.handledNote) + '</span>' : '<span class="tag tag-gray">待处理</span>';
       var corrCount = (rec.correctionHistory || []).filter(function (item) { return item.patches; }).length;
+      /* 辅证照片：缩略图点击新标签看原图（附件接口登录态 Cookie 同源自带） */
+      var photoCell = (rec.photos && rec.photos.length)
+        ? rec.photos.map(function (ph) {
+            var name = String(ph.file || '').split('/').pop();
+            return '<a href="/api/inspection/attachments/' + encodeURIComponent(name) + '" target="_blank" title="查看辅证照片">'
+              + '<img class="ph-thumb" src="/api/inspection/attachments/' + encodeURIComponent(name) + '" alt="辅证照片" loading="lazy"></a>';
+          }).join('')
+        : '-';
       return '<tr>' +
         '<td class="cell-sub">' + fmtTime(rec.capturedAt) + '</td>' +
         '<td>' + esc(rec.senderName || rec.senderId || '-') + '</td>' +
@@ -740,6 +748,7 @@
         '<td>' + showVal(ex.horizontal) + '</td>' +
         '<td>' + vertical + '</td>' +
         '<td>' + statusCell + '</td>' +
+        '<td>' + photoCell + '</td>' +
         '<td>' + (corrCount ? '<span class="tag tag-orange">' + corrCount + ' 次</span>' : '-') + '</td>' +
       '</tr>';
     }).join('');

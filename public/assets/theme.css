@@ -205,6 +205,8 @@
   .rule-name { display: flex; align-items: center; gap: 8px; font-size: 13.5px; font-weight: 600; }
   .cell-main { color: var(--text); font-weight: 500; }
   .cell-sub { margin-top: 5px; color: var(--text-3); font-size: 11.5px; line-height: 1.5; }
+  /* 记录明细「辅证」列缩略图 */
+  .ph-thumb { width: 44px; height: 44px; object-fit: cover; border-radius: 6px; margin: 2px 4px 2px 0; vertical-align: middle; }
   .mono { font-family: Menlo, Consolas, monospace; font-size: 12px; }
   .group-chips { display: flex; flex-wrap: wrap; gap: 5px; max-width: 250px; }
   .group-chip { padding: 3px 7px; border-radius: 4px; background: var(--fill); color: var(--text-2); font-size: 11px; }

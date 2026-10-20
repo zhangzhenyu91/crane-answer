@@ -4,6 +4,7 @@ const WeChatPadProClient = require('./wechatpadpro/client');
 const { handleMessage } = require('./wechatpadpro/messageHandler');
 const { createServer } = require('./server');
 const { initStore, sweepStaleSessions } = require('./inspection/store');
+const { initImageStore } = require('./wechatpadpro/imageStore');
 const { initLines } = require('./lines');
 
 const client = new WeChatPadProClient({
@@ -16,6 +17,7 @@ let shuttingDown = false;
 async function main() {
   initSettings();
   initStore();
+  initImageStore();
   initLines();
   const sweepTimer = setInterval(() => {
     try {

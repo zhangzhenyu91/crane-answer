@@ -3,6 +3,7 @@ const config = require('../config');
 const { resolveDisplayName, resolveWxidByName } = require('./memberResolver');
 const { runWorkflow } = require('../dify');
 const store = require('../inspection/store');
+const imageStore = require('./imageStore');
 const { matchLine } = require('../lines');
 const { sendSessionXlsx } = require('../inspection/deliver');
 const { pushSession } = require('../inspection/push');
@@ -103,9 +104,28 @@ function popMatchingRecall(groupId, record) {
 }
 
 /**
- * 撤回事件处理：实时推送的撤回系统消息不含被撤消息 ID（已实测确认），
- * 启发式删除记录——撤回人时间窗内最近一条，兜底群内时间窗内最近一条；
- * 删除后群内文本反馈「已删除」（无法引用已撤回的消息）。
+ * 记录删除时连带清理其辅证照片：缓存条目（含已下载文件）按记录 id 反查删除，
+ * 兜底按记录 photos 上的文件路径直接删（缓存条目缺失时）。
+ * @returns {number} 清理的照片张数
+ */
+function purgeRecordPhotos(record) {
+  const count = (record.photos || []).length;
+  for (const entry of imageStore.findByRecordId(record.id)) imageStore.removeImage(entry.svrId);
+  for (const photo of record.photos || []) imageStore.deleteFile(photo.file);
+  record.photos = [];
+  return count;
+}
+
+/**
+ * 撤回事件处理：实时推送的撤回系统消息不含被撤消息 ID（已实测确认），启发式删除——
+ * 把「撤回人时间窗内最近一条记录」与「撤回人时间窗内最近一张缓存图片」放进同一时间线，取较新者：
+ * - 撤到图片：已挂接记录 → 仅摘删该辅证照片（记录保留），群内反馈「已删除辅证照片」；未挂接 → 静默清缓存；
+ * - 撤到记录：删记录并连带删除其全部辅证照片，群内文本反馈「已删除」（无法引用已撤回的消息）；
+ * - 撤回人两者皆无时兜底群内时间窗内最近一条记录（群主撤回他人消息等场景）。
+ * 竞态处理：撤回先于记录落库到达时暂存撤回事件，记录出现时以「撤回时间 ≥ 报送时间」补判删除（可区分"先撤回闲聊再报送"）；
+ * 提取进行中记录被撤回的，提取返回后跳过落库与「已记录」反馈。
+ * 局限：同一发送者连续报送时，撤回只能定位到其最近一条消息项，无法精确到被撤的那一条；
+ * 「引用图片发文字」后撤回图片的，因记录（引用文字）比图片更新，会按撤记录处理（整条删除）。
  */
 async function handleRecall(msg, group, conversationId) {
   let recallerWxid = msg.sender_id && !String(msg.sender_id).endsWith('@chatroom') ? String(msg.sender_id) : '';
@@ -113,15 +133,37 @@ async function handleRecall(msg, group, conversationId) {
     const m = String(msg.content || '').match(/^["“](.+?)["”]\s*撤回了一条消息/);
     if (m) recallerWxid = await resolveWxidByName(conversationId, m[1]);
   }
+  const recalledImage = recallerWxid ? imageStore.findRecallImage(conversationId, recallerWxid, RECALL_WINDOW_SEC) : null;
   const target = store.findRecallTarget(conversationId, recallerWxid, RECALL_WINDOW_SEC);
+
+  // 同一时间线取较新者：图片比记录新 → 按「撤回图片」处理（仅删辅证照片，记录保留）
+  if (recalledImage && (!target || recalledImage.capturedAt >= target.record.capturedAt)) {
+    if (recalledImage.recordId) {
+      const found = store.findRecord(recalledImage.recordId);
+      const photo = found && store.removePhoto(found.record, recalledImage.svrId);
+      imageStore.removeImage(recalledImage.svrId);
+      if (found) store.saveSession(found.session);
+      console.log(
+        `[树木排查] 辅证照片因图片撤回已删除（记录 ${recalledImage.recordId}${photo ? '' : ' 上未找到该照片'}，撤回人=${recallerWxid}）`
+      );
+      sendText(conversationId, '已删除辅证照片')
+        .catch((err) => console.error(`[树木排查] 「已删除辅证照片」反馈发送失败：${err.message}`));
+    } else {
+      imageStore.removeImage(recalledImage.svrId);
+      console.log(`[树木排查] 未挂接的缓存图片因撤回已清理（${group.name}，撤回人=${recallerWxid}）`);
+    }
+    return;
+  }
+
   if (!target) {
     console.log(`[树木排查] 撤回事件未命中任何记录（${group.name}，撤回人=${recallerWxid || '-'}），暂存待补判`);
     stashPendingRecall(conversationId, recallerWxid, Number(msg.created_at) || Math.floor(Date.now() / 1000));
     return;
   }
+  const photoCount = purgeRecordPhotos(target.record);
   store.removeRecord(target.session, target.record.id);
   console.log(
-    `[树木排查] 记录 ${target.record.id} 因消息撤回已删除（匹配方式=${target.matchedBy}）：${target.record.content.slice(0, 40)}`
+    `[树木排查] 记录 ${target.record.id} 因消息撤回已删除（匹配方式=${target.matchedBy}，连带辅证照片 ${photoCount} 张）：${target.record.content.slice(0, 40)}`
   );
   sendText(conversationId, '已删除')
     .catch((err) => console.error(`[树木排查] 「已删除」反馈发送失败：${err.message}`));
@@ -169,6 +211,7 @@ function parseReferXml(raw) {
   };
   return {
     svrid: pick('svrid'),
+    type: pick('type'), // 被引用消息类型：3=图片（引用图片发文字时据此与更正分流）
     content: pick('content'),
     fromusr: pick('fromusr'),
     chatusr: pick('chatusr'),
@@ -182,10 +225,11 @@ function quoteTitle(content) {
 
 /**
  * 引用消息识别：真实推送中引用消息为 kind=app 且 app.category='quote'，
- * app.reference 携带被引用消息的 svr_id/new_msg_id/content/display_name。
+ * app.reference 携带被引用消息的 svr_id/new_msg_id/content/display_name/msg_type（msg_type=3 表示被引用者是图片）。
  * 注意：reply_context 是普通消息的自身回显（svr_id 指向自己），不能用于引用判定。
- * 兜底解析 content/raw 中的 appmsg type=57 XML（refermsg 块）。
- * 返回 { svrid, content, text } | null，text 为引用者新发的内容。
+ * 兜底解析 content/raw 中的 appmsg type=57 XML（refermsg 块）；
+ * 「引用记录发图片」的图片消息（kind=image）不带 app 结构，引用信息在其 source/go_fields.Content 的 refermsg 块中。
+ * 返回 { svrid, content, text, msgType } | null，text 为引用者新发的内容，msgType 为被引用消息类型（可空）。
  */
 function extractQuote(msg, content) {
   const app = msg.app;
@@ -195,12 +239,24 @@ function extractQuote(msg, content) {
       svrid: String(ref.svr_id || ref.new_msg_id || ref.msg_id || ''),
       content: String(ref.content || ''),
       text: String(app.title || content || '').trim(),
+      msgType: ref.msg_type != null ? Number(ref.msg_type) : null,
     };
   }
-  const rawText = [msg.raw, msg.msg_source, content].filter((v) => typeof v === 'string').join('\n');
+  const rawText = [
+    msg.raw,
+    msg.msg_source,
+    msg.source,
+    msg.go_fields && msg.go_fields.Content,
+    content,
+  ].filter((v) => typeof v === 'string').join('\n');
   const refer = parseReferXml(rawText);
   if (refer && (refer.svrid || refer.content)) {
-    return { svrid: refer.svrid, content: refer.content, text: quoteTitle(content) };
+    return {
+      svrid: refer.svrid,
+      content: refer.content,
+      text: quoteTitle(content),
+      msgType: refer.type ? Number(refer.type) : null,
+    };
   }
   return null;
 }
@@ -280,7 +336,12 @@ function flushSessionCaptures(sessionId) {
   return Promise.allSettled(tasks);
 }
 
-async function captureRecord(rule, group, session, msg, senderId, content) {
+/**
+ * 捕获报送消息：先落库 pending 记录再调 Dify 提取。
+ * photoSvrId 可选：「引用图片发记录文字」场景被引用图片的 svr_id——
+ * 提取确认是树障后下载该图并挂为记录辅证照片（下载失败不影响记录本体，反馈中带明）。
+ */
+async function captureRecord(rule, group, session, msg, senderId, content, photoSvrId) {
   const senderName = await resolveDisplayName(session.groupId, senderId);
   const record = store.addRecord(session, {
     msgId: msgIdOf(msg),
@@ -331,11 +392,41 @@ async function captureRecord(rule, group, session, msg, senderId, content) {
         handledNote: String(extracted.status_note || '').trim(),
       });
       store.saveSession(session);
+      // 辅证照片：提取确认是树障后才下载被引用图片；下载期间记录被撤回的，删掉已下载文件并静默退出
+      let photoNote = '';
+      if (photoSvrId) {
+        const cached = imageStore.getImage(photoSvrId);
+        if (!cached) {
+          photoNote = '，但未找到引用的图片';
+          console.warn(`[树木排查] 记录 ${record.id} 引用的图片 ${photoSvrId} 不在缓存中（可能已过期或服务重启前收到），辅证缺失`);
+        } else {
+          try {
+            const got = await imageStore.downloadImage(photoSvrId);
+            if (!session.records.some((item) => item.id === record.id)) {
+              imageStore.deleteFile(got.file);
+              console.log(`[树木排查] 记录 ${record.id} 在辅证下载期间已被撤回删除，已清理下载文件`);
+              return false;
+            }
+            store.addPhoto(record, {
+              msgId: photoSvrId,
+              senderId: cached.senderId || senderId,
+              capturedAt: cached.capturedAt,
+              file: got.file,
+              bytes: got.bytes,
+            });
+            imageStore.attachToRecord(photoSvrId, record.id);
+            store.saveSession(session);
+          } catch (photoErr) {
+            photoNote = '，但辅证照片下载失败';
+            console.error(`[树木排查] 记录 ${record.id} 辅证照片下载失败（记录保留）：${photoErr.message}`);
+          }
+        }
+      }
       console.log(
         `[树木排查] 捕获记录 ${record.id}：线路=${lineNameRaw || '-'}→${record.matchedLine ? record.matchedLine.name : '待确认'}` +
-        ` 区段=${extracted.pole_from ?? ''}-${extracted.pole_to ?? ''} 发送者=${senderName}`
+        ` 区段=${extracted.pole_from ?? ''}-${extracted.pole_to ?? ''} 发送者=${senderName} 辅证=${(record.photos || []).length} 张`
       );
-      sendQuote(session.groupId, '已记录', msg)
+      sendQuote(session.groupId, `已记录${photoNote}`, msg)
         .then(() => console.log(`[树木排查] 「已记录」反馈已发送（${record.id}）`))
         .catch((err) => console.error(`[树木排查] 「已记录」反馈发送失败：${err.message}`));
       return true;
@@ -351,6 +442,68 @@ async function captureRecord(rule, group, session, msg, senderId, content) {
     }
   })();
   pendingCaptures.set(record.id, { sessionId: session.id, promise: task });
+}
+
+/**
+ * 会话内图片消息（treeWatch）：
+ * - 裸发图片：缓存 CDN 下载参数备查（不下载本体、不反馈），待「引用图片发文字」时查表挂接；
+ * - 引用记录发图片（图片消息自身带 refermsg 引用块）：下载并挂到被引用记录为辅证照片，
+ *   反馈「已添加辅证照片」——与文字更正严格分流（图片消息无更正文本，不进更正工作流）。
+ */
+async function handleImageMessage(rule, group, session, msg, senderId, content) {
+  const entry = imageStore.cacheImage(msg, session.groupId, senderId);
+  const quote = extractQuote(msg, content);
+  if (!quote || !quote.svrid) {
+    if (entry) console.log(`[树木排查] 缓存群图片 ${entry.svrId}（${session.groupName}，发送者=${senderId}），待引用挂接`);
+    return;
+  }
+  let record = store.findRecordByMsgId(session, quote.svrid);
+  if (!record) record = store.findRecordByContent(session, quote.content);
+  if (!record) {
+    console.log(`[树木排查] 图片引用的消息未命中本会话记录（svrid=${quote.svrid}），仅缓存不挂接`);
+    return;
+  }
+  if (record.status === 'pending') {
+    const pending = pendingCaptures.get(record.id);
+    if (pending) {
+      console.log(`[树木排查] 记录 ${record.id} 提取进行中，辅证挂接等待其完成…`);
+      const captured = await pending.promise;
+      if (!captured) {
+        console.log('[树木排查] 目标记录提取未成功（已丢弃），辅证挂接忽略');
+        return;
+      }
+    }
+  }
+  if (!entry) {
+    console.warn(`[树木排查] 图片消息缺少 CDN 下载参数，无法挂接辅证（记录 ${record.id}）`);
+    sendQuote(session.groupId, '辅证照片下载失败', msg)
+      .catch((err) => console.error(`[树木排查] 「辅证照片下载失败」反馈发送失败：${err.message}`));
+    return;
+  }
+  try {
+    const got = await imageStore.downloadImage(entry.svrId);
+    if (!session.records.some((item) => item.id === record.id)) {
+      imageStore.removeImage(entry.svrId); // 下载期间记录被撤回删除，清理文件与缓存
+      console.log(`[树木排查] 记录 ${record.id} 在辅证下载期间已被撤回删除，已清理下载文件`);
+      return;
+    }
+    store.addPhoto(record, {
+      msgId: entry.svrId,
+      senderId,
+      capturedAt: entry.capturedAt,
+      file: got.file,
+      bytes: got.bytes,
+    });
+    imageStore.attachToRecord(entry.svrId, record.id);
+    store.saveSession(session);
+    console.log(`[树木排查] 辅证照片已挂接：记录 ${record.id}（图片 ${entry.svrId}，${got.bytes} 字节）`);
+    sendQuote(session.groupId, '已添加辅证照片', msg)
+      .catch((err) => console.error(`[树木排查] 「已添加辅证照片」反馈发送失败：${err.message}`));
+  } catch (err) {
+    console.error(`[树木排查] 辅证照片下载失败（记录 ${record.id}）：${err.message}`);
+    sendQuote(session.groupId, '辅证照片下载失败', msg)
+      .catch((sendErr) => console.error(`[树木排查] 「辅证照片下载失败」反馈发送失败：${sendErr.message}`));
+  }
 }
 
 async function handleCorrection(rule, group, session, msg, senderId, quote) {
@@ -560,8 +713,31 @@ async function handleTreeWatchMessage(msg, rule, group, conversationId, senderId
   const session = store.getActiveSession(conversationId);
   if (!session) return;
 
+  // 图片消息先行分流：裸发缓存备查；引用记录发图 → 挂辅证照片（图片无更正文本，不进更正流程）
+  if (String(msg.kind) === 'image' || (msg.image && typeof msg.image === 'object')) {
+    await handleImageMessage(rule, group, session, msg, senderId, content);
+    return;
+  }
+
   const quote = extractQuote(msg, content);
   if (quote) {
+    // 引用图片发记录文字（app.reference.msg_type=3，或被引用 svr_id 命中图片缓存且非记录）
+    // → 作为新报送捕获并把被引用图片挂为辅证；引用记录文字 → 更正流程（不变）
+    const recordHit = store.findRecordByMsgId(session, quote.svrid);
+    const imageHit = quote.svrid ? imageStore.getImage(quote.svrid) : null;
+    const quotingImage = Number(quote.msgType) === 3 || (!recordHit && !!imageHit);
+    if (quotingImage) {
+      if (!quote.text) {
+        console.log(`[树木排查] 引用图片但未附文字（svrid=${quote.svrid}），忽略`);
+        return;
+      }
+      if (!passesCaptureGate(quote.text)) {
+        console.log(`[树木排查] 引用图片的文字未过初筛，忽略：${quote.text.slice(0, 60)}`);
+        return;
+      }
+      await captureRecord(rule, group, session, msg, senderId, quote.text, quote.svrid);
+      return;
+    }
     await handleCorrection(rule, group, session, msg, senderId, quote);
     return;
   }

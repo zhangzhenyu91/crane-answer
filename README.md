@@ -47,14 +47,30 @@ Docker 部署见 `Dockerfile` 与 `docker/docker-compose.yml`，数据持久化�
 - **报送**：`@监听账号` 发送「报送」（审核通过，直推壹匣）或「报送修改」+备注（进壹匣暂存区），报送成功即结束会话，详见《报送壹匣》。
 - **结束**：`@监听账号` 且内容含任一结束关键词（默认：结束 / 结束记录）；或自最后一条捕获起超时（默认 12 小时，规则可配 1-72 小时）自动结束；或管理页手动结束。已汇总发表过的会话结束时不再重复发表；从未汇总的会话结束时先发表再结束。
 - 每个群同时仅一个活动会话；监听账号自身发送的消息一律不参与捕获。
-- **群内反馈**（WeChatPadPro `Msg/Quote` 引用回复，发送失败仅记日志不打断流程）：会话开始时引用指令消息回复「开始记录树障信息」；每条报送提取完成落库后引用该报送回复「已记录」；更正生效后引用更正消息回复「已更正」；汇总 xlsx 通过 `SendFile` 发送至群内（汇总指令发表后附引用回执「汇总表已发送，会话仍在记录中…」）。
+- **群内反馈**（WeChatPadPro `Msg/Quote` 引用回复，发送失败仅记日志不打断流程）：会话开始时引用指令消息回复「开始记录树障信息」；每条报送提取完成落库后引用该报送回复「已记录」（引用的图片不可用时为「已记录，但未找到引用的图片」，辅证下载失败时为「已记录，但辅证照片下载失败」，记录均保留）；「引用记录发图片」挂接辅证后引用该图片回复「已添加辅证照片」（下载失败回复「辅证照片下载失败」）；更正生效后引用更正消息回复「已更正」；汇总 xlsx 通过 `SendFile` 发送至群内（汇总指令发表后附引用回执「汇总表已发送，会话仍在记录中…」）。
 - **失败重试**：Dify 提取/更正调用失败时按 5 秒间隔重试 5 次；仍失败的记录丢弃并引用原消息回复「记录失败」，更正则回复「更正失败」。
-- **撤回删除**：群内撤回系统消息（`kind=system`、`type=10002`）触发记录删除。实时推送的撤回事件**不含被撤消息 ID**（已实测确认），采用启发式匹配：撤回人 wxid（群场景下若事件 sender 为群 ID，则从「"昵称" 撤回了一条消息」解析并反查群成员）+ 3 分钟时间窗内最近一条记录，兜底群内时间窗内最近一条；删除后群内文本反馈「已删除」（已撤回的消息无法再被引用，故用纯文本）。竞态处理：撤回先于记录落库到达时暂存撤回事件，记录出现时以「撤回时间 ≥ 报送时间」补判删除（可区分"先撤回闲聊再报送"）；提取进行中记录被撤回的，提取返回后跳过落库与「已记录」反馈。局限：同一发送者连续报送时，撤回只能定位到最近一条，无法精确到被撤的那一条。
+- **撤回删除**：群内撤回系统消息（`kind=system`、`type=10002`）触发删除。实时推送的撤回事件**不含被撤消息 ID**（已实测确认），采用启发式匹配：撤回人 wxid（群场景下若事件 sender 为群 ID，则从「"昵称" 撤回了一条消息」解析并反查群成员）+ 3 分钟时间窗内，把**记录与缓存图片放进同一时间线取较新者**——撤到图片：已挂接记录的仅摘删该辅证照片（记录保留，反馈「已删除辅证照片」），未挂接的静默清缓存（剥皮语义：保护旧记录不被后续误撤波及）；撤到记录：删记录并**连带删除其全部辅证照片**（本地文件 + 缓存条目），反馈「已删除」（已撤回的消息无法再被引用，故用纯文本）；撤回人两者皆无时兜底群内时间窗内最近一条记录。竞态处理：撤回先于记录落库到达时暂存撤回事件，记录出现时以「撤回时间 ≥ 报送时间」补判删除（可区分"先撤回闲聊再报送"）；提取进行中记录被撤回的，提取返回后跳过落库与「已记录」反馈。局限：同一发送者连续报送时，撤回只能定位到其最近一条消息项，无法精确到被撤的那一条；「引用图片发文字」后撤回图片的，因记录（引用文字）比图片更新，会按撤记录处理（整条删除）。
 
 ### 捕获规则（两层漏斗）
 
 1. **本地正则初筛**（`src/wechatpadpro/messageHandler.js`，宽进严出）：命中「杆号（`24-25`、`26#-27#`、`29塔底`、`56号` 等）且含特征词（`棵|垂距|垂直|超高|水平`）」，或「含树种词（`树|棵`）且含量测词（`水平|垂距|垂直|超高`）」；纯交叉跨越消息（含 `交叉|跨越` 且无 `棵`）排除。
 2. **Dify 提取工作流终审**：输出 `is_tree_hazard=false` 时丢弃。
+
+### 辅证照片（图片挂接）
+
+报送除纯文字外支持两种带图形态（Dify 提取/更正契约不变，照片不参评提取）：
+
+- **引用图片发记录文字**：先往群里发照片，再**引用这张照片**发送报送文字。引用消息 `kind=app` 且 `app.category='quote'`，`app.reference.msg_type=3` 表明被引用者是图片（refermsg XML 兜底取 `<type>3</type>`），据此与「引用记录发文字 → 更正」分流。命中后文字走正常两层漏斗捕获，Dify 确认是树障后再下载被引用图片挂为该记录的辅证照片（判定非树障或初筛不过则不下载）。
+- **引用记录发图片**：**引用一条已捕获的报送消息**发送照片（图片消息自身 `source`/`go_fields.Content` 的 refermsg 块携带被引用记录 svr_id）。命中记录即下载挂接并反馈「已添加辅证照片」，同一记录可挂多张；记录仍在提取中的等提取完成后挂接。图片消息无更正文本可言，**永不进更正工作流**（与更正的识别据此严格区分）。
+- **裸发图片**（不引用任何消息）：仅按 `svr_id` 缓存 CDN 下载参数备查（`data/image-cache.json` 持久化，重启不丢），不下载本体、不做反馈。
+
+实现要点（2026-10-20 实测确认）：
+
+- 图片消息（`kind=image`/`type=3`）的 `image.cdn_download_contexts[]` 自带 CDN 下载参数（`file_no` + `file_aes_key`，`variant=standard` 为原图）；**引用报文不含这些参数**，只能靠 `app.reference.svr_id` 关联 → 图片到达时按 `svr_id` 缓存参数，被引用时查表下载。
+- 下载走云端网关 `POST {apiBase}/v1/Tools/CdnDownloadImage`（`X-Cloud-Access-Token` 鉴权，**参数必须小写** `file_no`/`file_aes_key`），返回 `Data.Image` 为服务端已解密的完整原图 base64；失败按 3 秒间隔重试 2 次，魔数校验 JPEG/PNG 后存 `data/attachments/evi-<svrId>.<jpg|png>`。（`GetMsgBigImg`/`DownloadImg` 等旧接口已实测不可用，勿回退。）
+- 缓存条目未挂接记录时 3 天过期清理；挂接后随记录存续，记录被撤回/删除时连带清除（含本地文件）。
+- 管理页「排查记录 → 会话 → 记录明细」新增「辅证」列展示缩略图（点击看原图，经 `/api/inspection/attachments/:name` 鉴权读取，文件名白名单防穿越）。
+- 报送壹匣时照片随记录上送（`records[i].evidence_photos`，base64 dataURL，见《报送壹匣》接口契约），壹匣侧写入自家 COS 作为辅证照片（kind=evidence）。
 
 ### 更正与状态
 
@@ -93,8 +109,8 @@ Docker 部署见 `Dockerfile` 与 `docker/docker-compose.yml`，数据持久化�
 - 机器人以纯文本回执：未配置「未配置壹匣推送」、无已发汇总「暂无可推送的排查汇总」、无有效记录「会话无有效记录」、成功「已报送壹匣：入库 n 条（发送人昵称）」/「已报送暂存：n 条（发送人昵称），备注已随表提交」、失败「报送失败：原因」。
 - **管理页**：「排查记录」→ 会话详情弹窗底部「报送 / 报送修改」按钮（`POST /api/inspection/sessions/:id/push`，body `{mode, review_note}`，「报送修改」弹窗输入备注可留空），会话列表与详情展示最近一次推送状态（时间 / 模式 / 结果）。
 - **归属班组**：treeWatch 规则表单「归属班组（壹匣）」（最长 32 字符），作为 `team_name` 上报；未配置时推送直接报错。
-- **状态落库**：每次推送在会话上记录 `pushedAt` / `pushMode` / `pushResult`（如 `ok: inserted=3 updated=1` 或 `fail: 原因`）。
-- **调用策略**：单次超时 20 秒，失败按 3 秒间隔重试 2 次（共 3 次）。
+- **状态落库**：每次推送在会话上记录 `pushedAt` / `pushMode` / `pushResult`（如 `ok: inserted=3 updated=1 photos=2` 或 `fail: 原因`）。
+- **调用策略**：单次超时 60 秒（辅证照片随记录上送、壹匣侧入 COS 耗时），失败按 3 秒间隔重试 2 次（共 3 次）。
 
 **接口契约**：`POST {YIXIA_BASE_URL}/api/v1/treehazard/ingest`，请求头 `Content-Type: application/json`、`X-Ingest-Token: {YIXIA_INGEST_TOKEN}`，body：
 
@@ -108,7 +124,7 @@ Docker 部署见 `Dockerfile` 与 `docker/docker-compose.yml`，数据持久化�
 | `xlsx_base64` | 汇总 xlsx 的 base64（与群内发送的同源，存档用） |
 | `records` | 有效记录数组（`status=active`），字段见下 |
 
-`records[i]`：`crane_record_id`、`msg_id`、`voltage_level`、`line_name`（未匹配为空）、`line_name_raw`、`section`（同导出区段格式）、`pole_from` / `pole_to`（数字或 null）、`position_note`、`tree_species`、`tree_count`、`dist_small` / `dist_big`（距小号/大号侧距离）、`diameter`、`horizontal`、`vertical`（超高为 `超高x` 形式）、`finder_name`（别名优先）、`found_at`（`yyyy-MM-dd`）。
+`records[i]`：`crane_record_id`、`msg_id`、`voltage_level`、`line_name`（未匹配为空）、`line_name_raw`、`section`（同导出区段格式）、`pole_from` / `pole_to`（数字或 null）、`position_note`、`tree_species`、`tree_count`、`dist_small` / `dist_big`（距小号/大号侧距离）、`diameter`、`horizontal`、`vertical`（超高为 `超高x` 形式）、`finder_name`（别名优先）、`found_at`（`yyyy-MM-dd`）、`evidence_photos`（辅证照片数组，恒存在、可为空：`[{ msg_id, image }]`，`msg_id` 为来源图片消息 svr_id，`image` 为 jpeg/png base64 dataURL；壹匣侧整组替换该记录的 evidence 照片，空数组=清除，字段缺省=不动既有辅证）。
 
 ### 线路表
 
@@ -223,13 +239,9 @@ Docker 部署见 `Dockerfile` 与 `docker/docker-compose.yml`，数据持久化�
 - 拿不准时输出 none，禁止编造 patches
 ```
 
-## 位置与图片存证（后续规划，本期未实现）
+## 位置与图片存证
 
-报送消息中常出现「经纬度如下」后紧跟位置消息或奥维地图截图的用法。本期最终汇总表不含经纬度列，且 WeChatPadPro 推送中的图片消息暂无法提取下载，故位置/图片均不落库。后续接入方案预留如下：
-
-- **位置消息挂接**：会话激活期间收到位置消息时，按「同发送者 + 最近一条记录（10 分钟窗口）」挂接到记录的 `location` 字段；挂接点位于 `messageHandler.js` 的 treeWatch 分支（参考现有 location 触发规则的经纬度提取）。
-- **图片挂接**：待 WeChatPadPro 支持图片下载后，将会话内紧跟记录的图片（或引用记录的图片）下载到 `data/attachments/`，记录存相对路径，导出 xlsx 时追加「附件」列。
-- 记录结构已预留扩展空间，升级时无需迁移历史数据。
+报送消息中常出现「经纬度如下」后紧跟位置消息的用法，最终汇总表不含经纬度列，位置信息不落库。图片存证（辅证照片）已实现：会话内「引用图片发记录文字」与「引用记录发图片」两种形态挂接辅证，下载方式、缓存、撤回连带删除与报送契约见《树木排查（treeWatch）规则 · 辅证照片》节；汇总 xlsx 列序保持不变（不加附件列），照片仅在报送壹匣时随记录上送。
 
 ## 目录结构
 
@@ -247,7 +259,8 @@ src/
     push.js                会话记录结构化推送壹匣（xlsx base64 附档、超时重试）
   wechatpadpro/
     client.js              WebSocket 通道（换票、重连、心跳）
-    messageHandler.js      消息分发：位置触发 + 树木排查会话
+    messageHandler.js      消息分发：位置触发 + 树木排查会话（含辅证照片双向引用挂接与撤回分流）
     memberResolver.js      发送者显示名解析（别名 > 群成员接口 > wxid）
-    fileSender.js          WeChatPadPro SendFile 文件发送
+    imageStore.js          群图片 CDN 参数缓存与下载（data/image-cache.json + data/attachments/）
+    sender.js              WeChatPadPro 消息发送（SendTxt / Quote / SendFile）
 ```

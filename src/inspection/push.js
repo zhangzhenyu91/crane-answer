@@ -1,3 +1,5 @@
+const fs = require('fs');
+const path = require('path');
 const config = require('../config');
 const { getSettings } = require('../settings');
 const store = require('./store');
@@ -9,7 +11,7 @@ const {
   resolveFinderName,
 } = require('./export');
 
-const PUSH_TIMEOUT_MS = 20000;
+const PUSH_TIMEOUT_MS = 60000; // 辅证照片随记录上送、壹匣侧入 COS 耗时，超时放宽到 60s
 const PUSH_RETRIES = 2;
 const PUSH_RETRY_DELAY_MS = 3000;
 
@@ -38,6 +40,25 @@ function formatFoundAt(unixSeconds) {
 }
 
 /**
+ * 装配记录辅证照片：读本地缓存文件转 base64 dataURL（与壹匣照片上传同口径）。
+ * 字段恒为数组（可为空）——壹匣侧据此区分「无辅证」（重推时清除既有辅证）与「旧版未上报」（不动既有辅证）；
+ * 文件缺失的单张跳过并记日志。
+ */
+function buildEvidencePhotos(record) {
+  const photos = [];
+  for (const photo of record.photos || []) {
+    try {
+      const buf = fs.readFileSync(path.join(config.dataDir, photo.file));
+      const mime = photo.file.endsWith('.png') ? 'image/png' : 'image/jpeg';
+      photos.push({ msg_id: photo.msgId || '', image: `data:${mime};base64,${buf.toString('base64')}` });
+    } catch (err) {
+      console.error(`[报送壹匣] 记录 ${record.id} 辅证照片 ${photo.file} 读取失败，已跳过：${err.message}`);
+    }
+  }
+  return photos;
+}
+
+/**
  * 装配单条推送记录；区段/侧别距离/垂直距离/发现人的展示文本与 export.js 汇总列保持一致。
  */
 function buildRecordPayload(record) {
@@ -61,6 +82,7 @@ function buildRecordPayload(record) {
     vertical: formatVertical(record),
     finder_name: resolveFinderName(record.senderId, record.senderName),
     found_at: formatFoundAt(record.capturedAt),
+    evidence_photos: buildEvidencePhotos(record),
   };
 }
 
@@ -148,7 +170,7 @@ async function pushSession(session, mode, pusher = {}, reviewNote = '') {
   session.pushMode = mode;
   try {
     const data = await postIngestWithRetry(url, body);
-    const summary = ['inserted', 'updated', 'skipped']
+    const summary = ['inserted', 'updated', 'skipped', 'photos']
       .filter((key) => data && typeof data[key] === 'number')
       .map((key) => `${key}=${data[key]}`)
       .join(' ');
