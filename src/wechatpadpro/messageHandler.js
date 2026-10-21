@@ -406,7 +406,18 @@ async function captureRecord(rule, group, session, msg, senderId, content, photo
         store.removeRecord(session, record.id);
         return false;
       }
-      const lineNameRaw = String(extracted.line_name || '').trim();
+      // 省略线路名称（line_name / line_name_raw 均为空）时按该成员最近一次记录的线路自动补全，
+      // 未命中则不补（上送后壹匣按缺线路 skipped）；补全只填 line_name_raw，后续 matchLine 正常归一化
+      let lineNameRaw = String(extracted.line_name || '').trim();
+      let autoFilledLine = '';
+      if (!lineNameRaw && !String(extracted.line_name_raw || '').trim()) {
+        const recentLine = store.findRecentLineBySender(senderId);
+        if (recentLine) {
+          lineNameRaw = recentLine;
+          autoFilledLine = recentLine;
+          console.log(`[树木排查] 记录 ${record.id} 省略线路名称，按 ${senderName} 上次记录自动补全为「${recentLine}」`);
+        }
+      }
       const match = lineNameRaw ? matchLine(lineNameRaw) : { status: 'unmatched' };
       store.finalizeRecord(record, {
         extracted,
@@ -451,7 +462,9 @@ async function captureRecord(rule, group, session, msg, senderId, content, photo
         `[树木排查] 捕获记录 ${record.id}：线路=${lineNameRaw || '-'}→${record.matchedLine ? record.matchedLine.name : '待确认'}` +
         ` 区段=${extracted.pole_from ?? ''}-${extracted.pole_to ?? ''} 发送者=${senderName} 辅证=${(record.photos || []).length} 张`
       );
-      sendQuote(session.groupId, `已记录${photoNote}`, msg)
+      // 回执注明线路补全，便于当场发现补错走更正；与辅证回执变体叠加（追加在其后）
+      const lineNote = autoFilledLine ? `（线路按你上次记录补为：${autoFilledLine}）` : '';
+      sendQuote(session.groupId, `已记录${photoNote}${lineNote}`, msg)
         .then(() => console.log(`[树木排查] 「已记录」反馈已发送（${record.id}）`))
         .catch((err) => console.error(`[树木排查] 「已记录」反馈发送失败：${err.message}`));
       // 实时推送该条至壹匣；失败仅落 pushStatus=failed 供失败重扫补推，不在群里刷推送错误

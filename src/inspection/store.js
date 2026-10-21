@@ -435,6 +435,27 @@ function listUnpushedRecords() {
 }
 
 /**
+ * 取该成员最近一次有效记录的线路名称（省略线路报送时自动补全用）：
+ * 优先归一化匹配后的线路名（matchedLine.name），为空回退原始线路名（lineNameRaw）；
+ * 仅统计 status=active 且未标 deleting 的记录，按 capturedAt 取最近一条。
+ * @returns {string|null} 线路名或 null
+ */
+function findRecentLineBySender(senderId) {
+  if (!senderId) return null;
+  let best = null;
+  for (const bucket of getState().buckets) {
+    for (const record of bucket.records) {
+      if (record.status !== 'active' || record.deleting) continue;
+      if (record.senderId !== senderId) continue;
+      const name = String((record.matchedLine && record.matchedLine.name) || record.lineNameRaw || '').trim();
+      if (!name) continue;
+      if (!best || record.capturedAt > best.capturedAt) best = { capturedAt: record.capturedAt, name };
+    }
+  }
+  return best ? best.name : null;
+}
+
+/**
  * 撤回消息定位记录：推送的撤回事件不含被撤消息 ID，只能启发式匹配——
  * 在该群所有日桶中取最近 N 分钟内的记录（覆盖跨午夜边界）：
  * 优先撤回人时间窗内最近的一条记录；群主撤回他人消息等场景兜底为该群时间窗内最近一条。
@@ -488,6 +509,7 @@ module.exports = {
   deleteSession,
   findRecord,
   listUnpushedRecords,
+  findRecentLineBySender,
   findRecallTarget,
   assignRecordLine,
   enqueuePendingDelete,
