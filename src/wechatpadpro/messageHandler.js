@@ -4,9 +4,11 @@ const { resolveDisplayName, resolveWxidByName } = require('./memberResolver');
 const { runWorkflow } = require('../dify');
 const store = require('../inspection/store');
 const imageStore = require('./imageStore');
+const fileStore = require('./fileStore');
+const { handleGroupAsk } = require('../ask/groupAsk');
 const { matchLine } = require('../lines');
 const { sendSessionXlsx } = require('../inspection/deliver');
-const { pushSession } = require('../inspection/push');
+const { pushSession, pushRecord, pushDelete } = require('../inspection/push');
 const { sendQuote, sendText } = require('./sender');
 
 /**
@@ -118,9 +120,12 @@ function purgeRecordPhotos(record) {
 
 /**
  * 撤回事件处理：实时推送的撤回系统消息不含被撤消息 ID（已实测确认），启发式删除——
- * 把「撤回人时间窗内最近一条记录」与「撤回人时间窗内最近一张缓存图片」放进同一时间线，取较新者：
- * - 撤到图片：已挂接记录 → 仅摘删该辅证照片（记录保留），群内反馈「已删除辅证照片」；未挂接 → 静默清缓存；
- * - 撤到记录：删记录并连带删除其全部辅证照片，群内文本反馈「已删除」（无法引用已撤回的消息）；
+ * 在该群所有日桶的时间窗内（含跨午夜）把「撤回人最近一条记录」与「撤回人最近一张缓存图片」
+ * 放进同一时间线，取较新者：
+ * - 撤到图片：已挂接记录 → 仅摘删该辅证照片（记录保留）并实时重推该条，群内反馈「已删除辅证照片」；
+ *   未挂接 → 静默清缓存；
+ * - 撤到记录：先实时推送删除至壹匣（pushDelete；失败入删除重试队列由失败重扫补推，不丢失），
+ *   再删本地记录并连带删除其全部辅证照片，群内文本反馈「已删除」（无法引用已撤回的消息）；
  * - 撤回人两者皆无时兜底群内时间窗内最近一条记录（群主撤回他人消息等场景）。
  * 竞态处理：撤回先于记录落库到达时暂存撤回事件，记录出现时以「撤回时间 ≥ 报送时间」补判删除（可区分"先撤回闲聊再报送"）；
  * 提取进行中记录被撤回的，提取返回后跳过落库与「已记录」反馈。
@@ -142,7 +147,15 @@ async function handleRecall(msg, group, conversationId) {
       const found = store.findRecord(recalledImage.recordId);
       const photo = found && store.removePhoto(found.record, recalledImage.svrId);
       imageStore.removeImage(recalledImage.svrId);
-      if (found) store.saveSession(found.session);
+      if (found) {
+        store.saveSession(found.session);
+        // 辅证变更实时重推该条（evidence_photos 为当前剩余照片，清空即清除壹匣辅证）；失败静默落库待重扫
+        pushRecord(found.session, found.record)
+          .then((result) => {
+            if (!result.ok) console.error(`[树木排查] 记录 ${found.record.id} 辅证变更重推壹匣失败：${result.message}`);
+          })
+          .catch((err) => console.error(`[树木排查] 记录 ${found.record.id} 辅证变更重推壹匣异常：${err.message}`));
+      }
       console.log(
         `[树木排查] 辅证照片因图片撤回已删除（记录 ${recalledImage.recordId}${photo ? '' : ' 上未找到该照片'}，撤回人=${recallerWxid}）`
       );
@@ -160,6 +173,18 @@ async function handleRecall(msg, group, conversationId) {
     stashPendingRecall(conversationId, recallerWxid, Number(msg.created_at) || Math.floor(Date.now() / 1000));
     return;
   }
+  // 整条删除：记录先标 deleting 并入删除重试队列（持久化、崩溃安全，且与记录推送重试互斥），
+  // 再实时推送删除至壹匣（先推后删）；失败不丢——由失败重扫按队列补推，本地删除与群内回执照常
+  target.record.deleting = true;
+  const delEvent = store.enqueuePendingDelete(target.session, target.record);
+  const pushResult = await pushDelete(target.session, target.record)
+    .catch((err) => ({ ok: false, message: err.message }));
+  if (pushResult.ok) {
+    store.removePendingDelete(delEvent.id);
+  } else {
+    store.settlePendingDelete(delEvent.id, pushResult.message);
+    console.error(`[树木排查] 记录 ${target.record.id} 删除推送壹匣失败，已入删除重试队列（本地仍删除）：${pushResult.message}`);
+  }
   const photoCount = purgeRecordPhotos(target.record);
   store.removeRecord(target.session, target.record.id);
   console.log(
@@ -169,7 +194,7 @@ async function handleRecall(msg, group, conversationId) {
     .catch((err) => console.error(`[树木排查] 「已删除」反馈发送失败：${err.message}`));
 }
 
-/* ------------------------- 树木排查会话（treeWatch） ------------------------- */
+/* ------------------------- 树木排查日桶捕获（treeWatch） ------------------------- */
 
 const POLE_RANGE_RE = /\d+\s*#?\s*[-—~－至]\s*#?\s*\d+/;
 const POLE_SINGLE_RE = /\d+\s*(?:#|号)(?:塔底)?/;
@@ -295,11 +320,6 @@ function stripMentions(content) {
   return String(content || '').replace(/@[^\s@]+/g, ' ').replace(/\s+/g, ' ').trim();
 }
 
-// 「报送修改」备注提取专用：仅剥 @ 提及、压缩空格/制表符，保留备注内换行
-function stripMentionsPreserveNewlines(content) {
-  return String(content || '').replace(/@[^\s@]+/g, ' ').replace(/[^\S\n]+/g, ' ').trim();
-}
-
 function parseWorkflowOutputs(result) {
   const outputs = (result && result.data && result.data.outputs) || {};
   let data = outputs;
@@ -322,11 +342,15 @@ function isTreeHazard(value) {
 }
 
 /**
- * 进行中的提取任务：recordId -> { sessionId, promise }。
- * 报送先落库为 pending 记录再调 Dify；更正与结束指令据此等待提取完成，
+ * 进行中的提取任务：recordId -> { sessionId(日桶 id), promise }。
+ * 报送先落库为 pending 记录再调 Dify；更正与汇总指令据此等待提取完成，
  * 避免「提取未返回时更正找不到记录」的竞态。
  */
 const pendingCaptures = new Map();
+
+function hasPendingCapture(recordId) {
+  return pendingCaptures.has(recordId);
+}
 
 function flushSessionCaptures(sessionId) {
   const tasks = [];
@@ -340,6 +364,7 @@ function flushSessionCaptures(sessionId) {
  * 捕获报送消息：先落库 pending 记录再调 Dify 提取。
  * photoSvrId 可选：「引用图片发记录文字」场景被引用图片的 svr_id——
  * 提取确认是树障后下载该图并挂为记录辅证照片（下载失败不影响记录本体，反馈中带明）。
+ * 落库成功后实时推送该条至壹匣（pushStatus=failed 时由失败重扫补推，不在群里刷推送错误）。
  */
 async function captureRecord(rule, group, session, msg, senderId, content, photoSvrId) {
   const senderName = await resolveDisplayName(session.groupId, senderId);
@@ -429,6 +454,12 @@ async function captureRecord(rule, group, session, msg, senderId, content, photo
       sendQuote(session.groupId, `已记录${photoNote}`, msg)
         .then(() => console.log(`[树木排查] 「已记录」反馈已发送（${record.id}）`))
         .catch((err) => console.error(`[树木排查] 「已记录」反馈发送失败：${err.message}`));
+      // 实时推送该条至壹匣；失败仅落 pushStatus=failed 供失败重扫补推，不在群里刷推送错误
+      pushRecord(session, record)
+        .then((pushResult) => {
+          if (!pushResult.ok) console.error(`[树木排查] 记录 ${record.id} 实时推送壹匣失败：${pushResult.message}`);
+        })
+        .catch((err) => console.error(`[树木排查] 记录 ${record.id} 实时推送壹匣异常：${err.message}`));
       return true;
     } catch (err) {
       console.error(`[树木排查] 提取调用失败（重试 5 次后仍失败），记录已丢弃：${err.message}，原文：${content.slice(0, 60)}`);
@@ -445,10 +476,10 @@ async function captureRecord(rule, group, session, msg, senderId, content, photo
 }
 
 /**
- * 会话内图片消息（treeWatch）：
+ * 日桶内图片消息（treeWatch）：
  * - 裸发图片：缓存 CDN 下载参数备查（不下载本体、不反馈），待「引用图片发文字」时查表挂接；
  * - 引用记录发图片（图片消息自身带 refermsg 引用块）：下载并挂到被引用记录为辅证照片，
- *   反馈「已添加辅证照片」——与文字更正严格分流（图片消息无更正文本，不进更正工作流）。
+ *   反馈「已添加辅证照片」并实时重推该条——与文字更正严格分流（图片消息无更正文本，不进更正工作流）。
  */
 async function handleImageMessage(rule, group, session, msg, senderId, content) {
   const entry = imageStore.cacheImage(msg, session.groupId, senderId);
@@ -460,7 +491,7 @@ async function handleImageMessage(rule, group, session, msg, senderId, content) 
   let record = store.findRecordByMsgId(session, quote.svrid);
   if (!record) record = store.findRecordByContent(session, quote.content);
   if (!record) {
-    console.log(`[树木排查] 图片引用的消息未命中本会话记录（svrid=${quote.svrid}），仅缓存不挂接`);
+    console.log(`[树木排查] 图片引用的消息未命中当日记录（svrid=${quote.svrid}），仅缓存不挂接`);
     return;
   }
   if (record.status === 'pending') {
@@ -499,6 +530,12 @@ async function handleImageMessage(rule, group, session, msg, senderId, content) 
     console.log(`[树木排查] 辅证照片已挂接：记录 ${record.id}（图片 ${entry.svrId}，${got.bytes} 字节）`);
     sendQuote(session.groupId, '已添加辅证照片', msg)
       .catch((err) => console.error(`[树木排查] 「已添加辅证照片」反馈发送失败：${err.message}`));
+    // 辅证新增实时重推该条（evidence_photos 随记录整组替换）；失败静默落库待重扫
+    pushRecord(session, record)
+      .then((pushResult) => {
+        if (!pushResult.ok) console.error(`[树木排查] 记录 ${record.id} 辅证新增重推壹匣失败：${pushResult.message}`);
+      })
+      .catch((err) => console.error(`[树木排查] 记录 ${record.id} 辅证新增重推壹匣异常：${err.message}`));
   } catch (err) {
     console.error(`[树木排查] 辅证照片下载失败（记录 ${record.id}）：${err.message}`);
     sendQuote(session.groupId, '辅证照片下载失败', msg)
@@ -510,7 +547,7 @@ async function handleCorrection(rule, group, session, msg, senderId, quote) {
   let record = store.findRecordByMsgId(session, quote.svrid);
   if (!record) record = store.findRecordByContent(session, quote.content);
   if (!record) {
-    console.log(`[树木排查] 引用消息未命中本会话记录（svrid=${quote.svrid || '-'}），忽略`);
+    console.log(`[树木排查] 引用消息未命中当日记录（svrid=${quote.svrid || '-'}），忽略`);
     return;
   }
   if (record.status === 'pending') {
@@ -572,6 +609,12 @@ async function handleCorrection(rule, group, session, msg, senderId, quote) {
     sendQuote(session.groupId, '已更正', msg)
       .then(() => console.log(`[树木排查] 「已更正」反馈已发送（${record.id}）`))
       .catch((err) => console.error(`[树木排查] 「已更正」反馈发送失败：${err.message}`));
+    // 更正落库后实时重推该条；失败静默落库待重扫
+    pushRecord(session, record)
+      .then((pushResult) => {
+        if (!pushResult.ok) console.error(`[树木排查] 记录 ${record.id} 更正后重推壹匣失败：${pushResult.message}`);
+      })
+      .catch((err) => console.error(`[树木排查] 记录 ${record.id} 更正后重推壹匣异常：${err.message}`));
     return;
   }
   if (outputs.action === 'status') {
@@ -590,37 +633,36 @@ async function handleCorrection(rule, group, session, msg, senderId, quote) {
 /* ------------------------- 报送壹匣指令（treeWatch） ------------------------- */
 
 /**
- * 群内 @监听账号 的报送指令：「报送」= 审核通过直接入库（direct）；「报送修改」+备注 = 进壹匣暂存区（staging）。
- * 两种模式推送成功均结束会话（报送即闭环，避免下次排查记录混入旧会话；修改在壹匣暂存区完成）。
- * 推送对象为该群最近一次已发汇总 xlsx 的会话；回执统一用纯文本 sendText。
+ * 群内 @监听账号 的「报送」指令：把当天日桶全部有效记录以 direct 模式整体重推壹匣
+ * （兜底补推用；实时推送已逐条上送，重推幂等覆盖）。回执统一用纯文本 sendText。
  */
-async function handleYixiaPushCommand(conversationId, senderId, mode, reviewNote) {
+async function handleYixiaPushCommand(conversationId, senderId, rule, group) {
   const reply = (text) => sendText(conversationId, text)
     .catch((err) => console.error(`[报送壹匣] 回执发送失败：${err.message}`));
   if (!config.yixia.baseUrl || !config.yixia.token) {
     await reply('未配置壹匣推送');
     return;
   }
-  const session = store.findLatestSentSession(conversationId);
-  if (!session) {
-    await reply('暂无可推送的排查汇总');
+  const records = store.listTodayRecords(conversationId);
+  if (!records.length) {
+    await reply('今日暂无记录');
     return;
   }
-  if (!session.records.some((item) => item.status === 'active')) {
-    await reply('会话无有效记录');
-    return;
-  }
+  const bucket = store.getTodayBucket(conversationId, {
+    ruleId: rule.id,
+    ruleName: rule.name,
+    groupName: group.name,
+    teamName: rule.teamName,
+  });
   const senderName = await resolveDisplayName(conversationId, senderId);
-  const result = await pushSession(session, mode, { wxid: senderId, name: senderName }, reviewNote)
+  const result = await pushSession(bucket, 'direct', { wxid: senderId, name: senderName })
     .catch((err) => ({ ok: false, message: err.message }));
   if (!result.ok) {
     await reply(`报送失败：${result.message}`);
     return;
   }
-  store.endSession(session.id, 'reported');
-  console.log(`[报送壹匣] 报送成功（${mode}），会话 ${session.id} 已结束（reported）`);
-  const suffix = mode === 'staging' ? '，备注已随表提交' : '';
-  await reply(`${result.message}（${senderName}）${suffix}`);
+  console.log(`[报送壹匣] 当天日桶 ${bucket.id} 整体重推成功（${records.length} 条）`);
+  await reply(`今日 ${records.length} 条记录已重新报送壹匣`);
 }
 
 async function handleTreeWatchMessage(msg, rule, group, conversationId, senderId, content) {
@@ -631,87 +673,54 @@ async function handleTreeWatchMessage(msg, rule, group, conversationId, senderId
 
   if (await botMentioned(msg, content, conversationId, wechat)) {
     const commandText = stripMentions(content);
-    // 报送指令锚定判定（全等/前缀），优先于关键词包含判定，
-    // 避免备注文本里混入「汇总」「结束」等关键词被误吞
-    const reportText = stripMentionsPreserveNewlines(content);
-    if (reportText === '报送' || reportText.startsWith('报送修改')) {
-      const mode = reportText === '报送' ? 'direct' : 'staging';
-      const reviewNote = mode === 'staging' ? reportText.slice('报送修改'.length).trim() : '';
-      await handleYixiaPushCommand(conversationId, senderId, mode, reviewNote);
+    // 「报送」指令锚定判定（全等），优先于关键词包含判定，
+    // 避免备注文本里混入「汇总」等关键词被误吞
+    if (commandText === '报送') {
+      await handleYixiaPushCommand(conversationId, senderId, rule, group);
       return;
     }
-    if ((rule.startKeywords || []).some((k) => commandText.includes(k))) {
-      const starterName = await resolveDisplayName(conversationId, senderId);
-      const { session, created } = store.startSession({
-        ruleId: rule.id,
-        ruleName: rule.name,
-        groupId: conversationId,
-        groupName: group.name,
-        startedBy: senderId,
-        startedByName: starterName,
-      });
-      console.log(created
-        ? `[树木排查] 会话开始：${group.name}（${conversationId}），发起人=${starterName}`
-        : `[树木排查] ${group.name} 已有进行中的会话，忽略重复开始`);
-      const feedbackText = created ? '开始记录树障信息' : '已有进行中的记录会话，可直接报送；如需重新开始，请先 @我 发送「结束」';
-      sendQuote(conversationId, feedbackText, msg)
-        .then(() => console.log('[树木排查] 「开始记录」反馈已发送'))
-        .catch((err) => console.error(`[树木排查] 「开始记录」反馈发送失败：${err.message}`));
-      return;
-    }
-    // 汇总是独立步骤指令：发表后不结束会话，可继续捕获/更正并再次汇总
+    // 汇总：把当天日桶记录的汇总 xlsx 发群（全天候捕获下不涉及会话生命周期）
     const summaryKeywords = Array.isArray(rule.summaryKeywords) && rule.summaryKeywords.length ? rule.summaryKeywords : ['汇总'];
     if (summaryKeywords.some((k) => commandText.includes(k))) {
-      const session = store.getActiveSession(conversationId);
-      if (session) {
-        const pendingCount = [...pendingCaptures.values()].filter((item) => item.sessionId === session.id).length;
-        if (pendingCount) console.log(`[树木排查] 汇总指令：等待 ${pendingCount} 条进行中的提取完成…`);
-        await flushSessionCaptures(session.id);
-        const current = store.getSession(session.id);
-        if (current.records.length) {
-          try {
-            const { fileName, bytes } = await sendSessionXlsx(current);
-            console.log(`[树木排查] 汇总已发送至群：${fileName}（${bytes} 字节），会话 ${current.id} 继续记录中`);
-            sendQuote(conversationId, '汇总表已发送，会话仍在记录中；审核无误请 @我 发送「报送」，需修改请发送「报送修改」+备注', msg)
-              .catch((err) => console.error(`[树木排查] 「汇总已发送」回执发送失败：${err.message}`));
-          } catch (err) {
-            console.error(`[树木排查] 汇总发送失败：${err.stack || err}`);
-          }
-        } else {
-          console.log('[树木排查] 会话无记录，跳过群内发送');
+      const bucket = store.getTodayBucket(conversationId, {
+        ruleId: rule.id,
+        ruleName: rule.name,
+        groupName: group.name,
+        teamName: rule.teamName,
+      });
+      const pendingCount = [...pendingCaptures.values()].filter((item) => item.sessionId === bucket.id).length;
+      if (pendingCount) console.log(`[树木排查] 汇总指令：等待 ${pendingCount} 条进行中的提取完成…`);
+      await flushSessionCaptures(bucket.id);
+      const current = store.getSession(bucket.id);
+      const activeCount = current.records.filter((item) => item.status === 'active').length;
+      if (activeCount) {
+        try {
+          const { fileName, bytes } = await sendSessionXlsx(current);
+          console.log(`[树木排查] 今日汇总已发送至群：${fileName}（${bytes} 字节）`);
+          sendQuote(conversationId, '今日汇总表已发送', msg)
+            .catch((err) => console.error(`[树木排查] 「今日汇总表已发送」回执发送失败：${err.message}`));
+        } catch (err) {
+          console.error(`[树木排查] 汇总发送失败：${err.stack || err}`);
         }
       } else {
-        console.log(`[树木排查] ${group.name} 无进行中的会话，忽略汇总指令`);
+        console.log('[树木排查] 今日无记录，跳过群内发送');
+        sendQuote(conversationId, '今日暂无记录', msg)
+          .catch((err) => console.error(`[树木排查] 「今日暂无记录」回执发送失败：${err.message}`));
       }
       return;
     }
-    if ((rule.endKeywords || []).some((k) => commandText.includes(k))) {
-      const session = store.getActiveSession(conversationId);
-      if (session) {
-        const pendingCount = [...pendingCaptures.values()].filter((item) => item.sessionId === session.id).length;
-        if (pendingCount) console.log(`[树木排查] 结束指令：等待 ${pendingCount} 条进行中的提取完成…`);
-        await flushSessionCaptures(session.id);
-        store.endSession(session.id, 'keyword');
-        const finalSession = store.getSession(session.id);
-        console.log(`[树木排查] 会话结束：${group.name}（${conversationId}），共捕获 ${finalSession.records.length} 条`);
-        if (finalSession.sentAt) {
-          console.log('[树木排查] 会话已汇总发表过，结束不再重复发送');
-        } else if (finalSession.records.length) {
-          sendSessionXlsx(finalSession)
-            .then(({ fileName, bytes }) => console.log(`[树木排查] 汇总已发送至群：${fileName}（${bytes} 字节）`))
-            .catch((err) => console.error(`[树木排查] 汇总发送失败：${err.stack || err}`));
-        } else {
-          console.log('[树木排查] 会话无记录，跳过群内发送');
-        }
-      } else {
-        console.log(`[树木排查] ${group.name} 无进行中的会话，忽略结束指令`);
-      }
-      return;
-    }
+    // 群内提问：@监听账号 未命中「报送」全等与汇总关键词后按六形态提问（未启用时静默忽略）
+    await handleGroupAsk({ msg, rule, group, conversationId, senderId, content, commandText, quote: extractQuote(msg, content) });
+    return;
   }
 
-  const session = store.getActiveSession(conversationId);
-  if (!session) return;
+  // 全天候捕获：自动取/建当天日桶（北京时间自然天，跨天自动换桶），不再有「未开始」闸门
+  const session = store.getTodayBucket(conversationId, {
+    ruleId: rule.id,
+    ruleName: rule.name,
+    groupName: group.name,
+    teamName: rule.teamName,
+  });
 
   // 图片消息先行分流：裸发缓存备查；引用记录发图 → 挂辅证照片（图片无更正文本，不进更正流程）
   if (String(msg.kind) === 'image' || (msg.image && typeof msg.image === 'object')) {
@@ -742,8 +751,16 @@ async function handleTreeWatchMessage(msg, rule, group, conversationId, senderId
     return;
   }
 
-  if (msg.kind && !['text', 'quote', 'app'].includes(String(msg.kind))) return;
-  if (!content || content.trim().startsWith('<')) return;
+  // 文件/视频/语音等媒体消息：解析下载参数缓存备查（群内提问引用时用），不进捕获
+  if (msg.kind && !['text', 'quote', 'app'].includes(String(msg.kind))) {
+    fileStore.cacheMedia(msg, conversationId, senderId);
+    return;
+  }
+  if (!content || content.trim().startsWith('<')) {
+    // app 形态的文件/视频/语音消息内容为 XML：仍尝试解析缓存下载参数备查（群内提问引用时用）
+    if (content && content.trim().startsWith('<')) fileStore.cacheMedia(msg, conversationId, senderId);
+    return;
+  }
   if (!passesCaptureGate(content)) return;
   await captureRecord(rule, group, session, msg, senderId, content.trim());
 }
@@ -774,6 +791,7 @@ function handleMessage(msg) {
       handleLocationTrigger(msg, conversationId, group.apiKey, rule.name)
         .catch((err) => console.error(`[触发] 规则“${rule.name}”处理失败：${err.stack || err}`));
     } else if (rule.trigger === 'treeWatch' && rule.action === 'dify') {
+      // 内部键 treeWatch 保留（数据兼容），展示名=输电班组运维
       if (isRecallEvent(msg)) {
         handleRecall(msg, group, conversationId)
           .catch((err) => console.error(`[树木排查] 规则“${rule.name}”撤回处理失败：${err.stack || err}`));
@@ -785,4 +803,4 @@ function handleMessage(msg) {
   }
 }
 
-module.exports = { handleMessage };
+module.exports = { handleMessage, hasPendingCapture };

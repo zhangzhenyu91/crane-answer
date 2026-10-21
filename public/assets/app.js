@@ -157,6 +157,7 @@
     $('wppTicketPath').value = state.wechat.ticketPath;
     $('wppWsUrl').value = state.wechat.wsUrl;
     $('wppBotWxid').value = state.wechat.botWxid || '';
+    $('wppFileAppId').value = state.wechat.fileAppId || '';
     $('difyApiBase').value = state.dify.apiBase;
     $('difyUser').value = state.dify.user;
     $('difyTimeout').value = state.dify.timeoutMs;
@@ -182,7 +183,7 @@
       var chips = rule.groups.slice(0, 2).map(function (group) { return '<span class="group-chip">' + esc(group.name || '未命名群') + '</span>'; }).join('');
       if (rule.groups.length > 2) chips += '<span class="group-chip">+' + (rule.groups.length - 2) + '</span>';
       var triggerCell = rule.trigger === 'treeWatch'
-        ? '<td><span class="tag tag-green">树木排查</span><div class="cell-sub mono">@+关键词会话</div></td>'
+        ? '<td><span class="tag tag-green">输电班组运维</span><div class="cell-sub mono">树木排查 + 群内提问</div></td>'
         : '<td><span class="tag tag-blue">位置消息</span><div class="cell-sub mono">kind=location</div></td>';
       return '<tr>' +
         '<td><div class="rule-name">' + esc(rule.name) + (rule.isDefault ? '<span class="tag tag-blue">默认规则</span>' : '') + '</div><div class="cell-sub" title="' + esc(rule.id) + '">规则编号 ' + esc(rule.id.slice(-8)) + '</div></td>' +
@@ -214,15 +215,19 @@
     }).join('');
   }
 
+  function updateAskHint() {
+    var team = $('ruleTeamName').value.trim();
+    $('ruleAskHint').textContent = '会话以『' + (team ? team + '群内提问' : '群内提问') + '』命名；@我 + 文字/引用文字/图片/文件/视频/语音即提问；可指定模型如『请使用K3』。';
+  }
+
   function syncTriggerFields() {
     var isTreeWatch = $('ruleTrigger').value === 'treeWatch';
     $('treeWatchFields').hidden = !isTreeWatch;
-    $('locationMapping').hidden = isTreeWatch;
-    $('treeWatchMapping').hidden = !isTreeWatch;
-    $('treeWatchCorrectHint').hidden = !isTreeWatch;
+    $('askFields').hidden = !isTreeWatch;
     $('ruleTriggerHint').textContent = isTreeWatch
-      ? '@监听账号 + 开始关键词开启记录会话；会话内命中捕获条件的消息逐条调用提取工作流，引用记录的消息调用更正工作流。'
+      ? '输电班组运维：全天候监听捕获，命中捕获条件的消息逐条调用提取工作流并实时推送壹匣，引用记录的消息调用更正工作流；@监听账号 可发「汇总」（当天 xlsx 发群）、「报送」（重推当天全部记录）或直接提问（见「群内提问」）。'
       : '仅当群成员发送有效位置消息时触发，自动提取经纬度、位置名称和发送者信息。';
+    updateAskHint();
   }
 
   function openRuleEditor(rule) {
@@ -231,11 +236,15 @@
     $('ruleModalTitle').textContent = rule ? '编辑监听规则' : '新建监听规则';
     $('ruleName').value = rule ? rule.name : '';
     $('ruleTrigger').value = rule && rule.trigger === 'treeWatch' ? 'treeWatch' : 'location';
-    $('ruleStartKeywords').value = rule && rule.startKeywords && rule.startKeywords.length ? rule.startKeywords.join(', ') : '开始记录树障, 开始记录, 开始排查';
     $('ruleSummaryKeywords').value = rule && rule.summaryKeywords && rule.summaryKeywords.length ? rule.summaryKeywords.join(', ') : '汇总';
-    $('ruleEndKeywords').value = rule && rule.endKeywords && rule.endKeywords.length ? rule.endKeywords.join(', ') : '结束, 结束记录';
-    $('ruleSessionTimeout').value = rule && rule.sessionTimeoutHours ? rule.sessionTimeoutHours : 12;
     $('ruleTeamName').value = rule && rule.teamName ? rule.teamName : '';
+    var ask = (rule && rule.ask) || {};
+    var askOn = rule ? ask.enabled !== false : true;
+    $('ruleAskEnabledSwitch').classList.toggle('on', askOn);
+    $('ruleAskEnabledSwitch').setAttribute('aria-checked', String(askOn));
+    $('ruleAskEnabledText').textContent = askOn ? '启用' : '停用';
+    $('ruleAskNameKey').value = '';
+    $('ruleAskNameKey').placeholder = ask.hasAskNameKey ? '留空则保持已保存 Key' : '请输入 app-xxxxxxxx';
     var enabled = rule ? rule.enabled : true;
     $('ruleEnabledSwitch').classList.toggle('on', enabled);
     $('ruleEnabledSwitch').setAttribute('aria-checked', String(enabled));
@@ -262,6 +271,13 @@
     this.setAttribute('aria-checked', String(on));
     $('ruleEnabledText').textContent = on ? '启用' : '停用';
   });
+  $('ruleAskEnabledSwitch').addEventListener('click', function () {
+    var on = !this.classList.contains('on');
+    this.classList.toggle('on', on);
+    this.setAttribute('aria-checked', String(on));
+    $('ruleAskEnabledText').textContent = on ? '启用' : '停用';
+  });
+  $('ruleTeamName').addEventListener('input', updateAskHint);
   $('addGroupBtn').addEventListener('click', function () {
     state.editingGroups.push({ name: '', groupId: '', hasKey: false, key: '' });
     renderGroupEditor();
@@ -341,17 +357,16 @@
         var splitKeywords = function (raw) {
           return raw.split(/[,，]/).map(function (item) { return item.trim(); }).filter(Boolean);
         };
-        payload.startKeywords = splitKeywords($('ruleStartKeywords').value);
         payload.summaryKeywords = splitKeywords($('ruleSummaryKeywords').value);
-        payload.endKeywords = splitKeywords($('ruleEndKeywords').value);
-        if (!payload.startKeywords.length) throw new Error('请填写开始关键词');
         if (!payload.summaryKeywords.length) throw new Error('请填写汇总关键词');
-        if (!payload.endKeywords.length) throw new Error('请填写结束关键词');
-        var timeout = Number($('ruleSessionTimeout').value);
-        if (!Number.isInteger(timeout) || timeout < 1 || timeout > 72) throw new Error('会话超时应在 1–72 小时之间');
-        payload.sessionTimeoutHours = timeout;
         payload.teamName = $('ruleTeamName').value.trim();
         if (payload.teamName.length > 32) throw new Error('归属班组不能超过 32 个字符');
+        var askNameKey = $('ruleAskNameKey').value.trim();
+        if (askNameKey.length > 200) throw new Error('文件名生成工作流 API Key 不能超过 200 个字符');
+        payload.ask = {
+          enabled: $('ruleAskEnabledSwitch').classList.contains('on'),
+          nameApiKey: askNameKey,
+        };
       }
       var editing = Boolean(state.editingRuleId);
       var data = await api(editing ? '/api/rules/' + encodeURIComponent(state.editingRuleId) : '/api/rules', {
@@ -455,6 +470,7 @@
       wsUrl: $('wppWsUrl').value.trim(),
       logRawMessage: $('rawLogSwitch').classList.contains('on'),
       botWxid: $('wppBotWxid').value.trim(),
+      fileAppId: $('wppFileAppId').value.trim(),
     };
   }
 
@@ -607,8 +623,6 @@
     return value == null || String(value).trim() === '' ? '' : esc(String(value).trim());
   }
 
-  var END_REASONS = { keyword: '指令结束', timeout: '超时结束', manual: '手动结束', reported: '已报送结束' };
-
   async function loadSessions(showFeedback) {
     var data = await api('/api/inspection/sessions');
     state.sessions = data.sessions || [];
@@ -617,32 +631,30 @@
   }
 
   function renderSessions() {
-    $('sessionCount').textContent = '共 ' + state.sessions.length + ' 个会话';
+    $('sessionCount').textContent = '共 ' + state.sessions.length + ' 个日桶';
     if (!state.sessions.length) {
-      $('sessionTableBody').innerHTML = '<tr><td colspan="7"><div class="empty"><div class="empty-icon">' + icon('message', 24) + '</div><p>暂无排查会话，在群内「@监听账号 + 开始关键词」即可开始记录</p></div></td></tr>';
+      $('sessionTableBody').innerHTML = '<tr><td colspan="5"><div class="empty"><div class="empty-icon">' + icon('message', 24) + '</div><p>暂无排查记录，群内报送后按北京时间自然天自动归入当日记录</p></div></td></tr>';
       return;
     }
     $('sessionTableBody').innerHTML = state.sessions.map(function (session) {
-      var statusCell = session.status === 'active'
-        ? '<span class="tag tag-green">进行中</span>'
-        : '<span class="tag tag-gray">已结束</span><div class="cell-sub">' + esc(END_REASONS[session.endReason] || '已结束') + '</div>';
+      var statusCell = '<span class="tag tag-green">记录中</span>';
       if (session.sentAt) statusCell += '<div class="cell-sub"><span class="tag tag-blue">已发群 ' + fmtTime(session.sentAt).slice(5) + '</span></div>';
       if (session.pushedAt) {
         var pushOk = String(session.pushResult || '').indexOf('ok') === 0;
         statusCell += '<div class="cell-sub"><span class="tag ' + (pushOk ? 'tag-green' : 'tag-orange') + '">' + (session.pushMode === 'staging' ? '已暂存' : '已入库') + ' ' + fmtTime(session.pushedAt).slice(5) + '</span></div>';
       }
+      if (session.pushFailedCount) {
+        statusCell += '<div class="cell-sub"><span class="tag tag-red" title="记录推送壹匣失败，可在详情中单条重推">推送失败 ' + session.pushFailedCount + '</span></div>';
+      }
       var countCell = '<span class="cell-main">' + session.recordCount + '</span>'
         + (session.pendingCount ? '<div class="cell-sub"><span class="tag tag-orange">待确认 ' + session.pendingCount + '</span></div>' : '');
       var actions = '<button class="text-btn primary" data-session-action="detail" data-id="' + esc(session.id) + '" type="button">详情</button>'
-        + (session.status === 'active' ? '<button class="text-btn" data-session-action="end" data-id="' + esc(session.id) + '" type="button">结束</button>' : '')
         + '<button class="text-btn" data-session-action="export" data-id="' + esc(session.id) + '" type="button">导出</button>'
         + '<button class="text-btn" data-session-action="send" data-id="' + esc(session.id) + '" type="button">发至群聊</button>'
         + '<button class="text-btn danger" data-session-action="delete" data-id="' + esc(session.id) + '" type="button">删除</button>';
       return '<tr>' +
         '<td><span class="cell-main">' + esc(session.groupName || '未命名群') + '</span><div class="cell-sub mono">' + esc(session.groupId) + '</div></td>' +
-        '<td>' + esc(session.startedByName || '-') + '</td>' +
-        '<td>' + fmtTime(session.startedAt) + '</td>' +
-        '<td>' + (session.status === 'active' ? '-' : fmtTime(session.endedAt)) + '</td>' +
+        '<td><span class="cell-main mono">' + esc(String(session.id).split('_').pop()) + '</span><div class="cell-sub">创建于 ' + fmtTime(session.startedAt) + '</div></td>' +
         '<td>' + statusCell + '</td>' +
         '<td>' + countCell + '</td>' +
         '<td><div class="actions">' + actions + '</div></td>' +
@@ -662,13 +674,6 @@
     var action = btn.getAttribute('data-session-action');
     var session = state.sessions.find(function (item) { return item.id === id; });
     if (action === 'detail') openSessionDetail(id, btn);
-    if (action === 'end') {
-      busy(btn, async function () {
-        await api('/api/inspection/sessions/' + encodeURIComponent(id) + '/end', { method: 'POST' });
-        await loadSessions(false);
-        toast('会话已结束');
-      });
-    }
     if (action === 'export') window.open('/api/inspection/sessions/' + encodeURIComponent(id) + '/export.xlsx', '_blank');
     if (action === 'send') {
       busy(btn, async function () {
@@ -679,7 +684,7 @@
     }
     if (action === 'delete') {
       state.deleteTarget = { type: 'session', id: id };
-      $('confirmText').innerHTML = '确定删除该会话及其全部 <strong>' + (session ? session.recordCount : 0) + '</strong> 条记录吗？此操作不可恢复。';
+      $('confirmText').innerHTML = '确定删除该日桶及其全部 <strong>' + (session ? session.recordCount : 0) + '</strong> 条记录吗？仅删本地数据，不联动壹匣删除已上报记录。此操作不可恢复。';
       openMask('confirmMask');
     }
   });
@@ -705,13 +710,13 @@
   function renderRecords() {
     var session = state.currentSession;
     if (!session) return;
-    $('sessionModalTitle').textContent = (session.groupName || '会话') + ' · 记录明细';
-    $('sessionModalSub').textContent = '发起人 ' + (session.startedByName || '-') + ' · 开始于 ' + fmtTime(session.startedAt) + ' · 共 ' + session.records.length + ' 条';
+    $('sessionModalTitle').textContent = (session.groupName || '日桶') + ' · 当日记录明细';
+    $('sessionModalSub').textContent = '日桶 ' + session.id + ' · 共 ' + session.records.length + ' 条';
     $('sessionPushStatus').textContent = session.pushedAt
       ? (session.pushMode === 'staging' ? '报送暂存' : '报送入库') + ' ' + fmtTime(session.pushedAt) + (session.pushResult ? ' · ' + session.pushResult : '')
       : '';
     if (!session.records.length) {
-      $('recordTableBody').innerHTML = '<tr><td colspan="12"><div class="empty"><p>该会话没有捕获到记录</p></div></td></tr>';
+      $('recordTableBody').innerHTML = '<tr><td colspan="13"><div class="empty"><p>该日桶没有捕获到记录</p></div></td></tr>';
       return;
     }
     $('recordTableBody').innerHTML = session.records.map(function (rec) {
@@ -728,6 +733,16 @@
       var statusCell = rec.status === 'pending'
         ? '<span class="tag tag-blue">解析中</span>'
         : rec.handledNote ? '<span class="tag tag-green">' + esc(rec.handledNote) + '</span>' : '<span class="tag tag-gray">待处理</span>';
+      /* 推送状态：成功绿 / 失败红（tooltip 带失败原因，旁附单条重推）/ 待推送灰 */
+      var pushCell;
+      if (rec.pushStatus === 'ok') {
+        pushCell = '<span class="tag tag-green">已推送</span>';
+      } else if (rec.pushStatus === 'failed') {
+        pushCell = '<span class="tag tag-red" title="' + esc(rec.pushError || '') + '">推送失败</span>'
+          + '<div class="cell-sub"><button class="text-btn primary" data-record-push="' + esc(rec.id) + '" type="button">重推</button></div>';
+      } else {
+        pushCell = '<span class="tag tag-gray">待推送</span>';
+      }
       var corrCount = (rec.correctionHistory || []).filter(function (item) { return item.patches; }).length;
       /* 辅证照片：缩略图点击新标签看原图（附件接口登录态 Cookie 同源自带） */
       var photoCell = (rec.photos && rec.photos.length)
@@ -748,6 +763,7 @@
         '<td>' + showVal(ex.horizontal) + '</td>' +
         '<td>' + vertical + '</td>' +
         '<td>' + statusCell + '</td>' +
+        '<td>' + pushCell + '</td>' +
         '<td>' + photoCell + '</td>' +
         '<td>' + (corrCount ? '<span class="tag tag-orange">' + corrCount + ' 次</span>' : '-') + '</td>' +
       '</tr>';
@@ -771,30 +787,39 @@
       .catch(function (err) { toast(err.message, 'error'); select.disabled = false; });
   });
 
+  /* 单条记录重推：实时推送失败记录旁的「重推」按钮 */
+  $('recordTableBody').addEventListener('click', function (event) {
+    var btn = event.target.closest('[data-record-push]');
+    if (!btn) return;
+    if (!state.currentSession) return;
+    var rid = btn.getAttribute('data-record-push');
+    busy(btn, async function () {
+      await api('/api/inspection/sessions/' + encodeURIComponent(state.currentSession.id) + '/records/' + encodeURIComponent(rid) + '/push', { method: 'POST', body: {} });
+      state.currentSession = await api('/api/inspection/sessions/' + encodeURIComponent(state.currentSession.id));
+      renderRecords();
+      loadSessions(false);
+      toast('该条记录已重新推送');
+    });
+  });
+
   $('exportSessionBtn').addEventListener('click', function () {
     if (!state.currentSession) return;
     window.open('/api/inspection/sessions/' + encodeURIComponent(state.currentSession.id) + '/export.xlsx', '_blank');
   });
 
-  function pushCurrentSession(mode, btn) {
+  /* 桶级推送：重推该日桶全部记录（direct） */
+  function pushCurrentSession(btn) {
     if (!state.currentSession) return;
-    var reviewNote = '';
-    if (mode === 'staging') {
-      var input = window.prompt('请输入审核备注（可留空，直接确定 = 无备注）：', '');
-      if (input === null) return;
-      reviewNote = input.trim();
-    }
     busy(btn, async function () {
       var id = state.currentSession.id;
-      var result = await api('/api/inspection/sessions/' + encodeURIComponent(id) + '/push', { method: 'POST', body: { mode: mode, review_note: reviewNote } });
+      var result = await api('/api/inspection/sessions/' + encodeURIComponent(id) + '/push', { method: 'POST', body: {} });
       state.currentSession = await api('/api/inspection/sessions/' + encodeURIComponent(id));
       renderRecords();
       loadSessions(false);
-      toast(result.message || '报送完成');
+      toast(result.message || '重推完成');
     });
   }
-  $('pushDirectBtn').addEventListener('click', function () { pushCurrentSession('direct', this); });
-  $('pushStagingBtn').addEventListener('click', function () { pushCurrentSession('staging', this); });
+  $('pushDirectBtn').addEventListener('click', function () { pushCurrentSession(this); });
 
   hydrateIcons();
   document.querySelectorAll('.confirm-icon').forEach(function (el) { el.innerHTML = icon('warning', 24); });

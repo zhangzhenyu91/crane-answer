@@ -52,6 +52,8 @@ function defaultSettings() {
       wsUrl: env.WECHATPADPRO_WS_URL || 'wss://api.wechatpadpro.com/ws/sync',
       logRawMessage: env.LOG_RAW_MESSAGE === '1',
       botWxid: env.WECHATPADPRO_BOT_WXID || '',
+      // 文件/视频/语音下载接口的 app_id（报文自带时优先用报文）
+      fileAppId: env.WECHATPADPRO_FILE_APP_ID || 'ID_10001',
     },
     dify: {
       apiBase: trimTrailingSlash(env.DIFY_API_BASE || 'https://ai.j1net.com/v1'),
@@ -66,6 +68,7 @@ function defaultSettings() {
       trigger: 'location',
       action: 'dify',
       groups,
+      ask: { enabled: true, nameApiKey: '' },
     }],
     aliases: parsePairs(env.SENDER_NAME_MAP).map(([wxid, name]) => ({ id: id('alias'), wxid, name })),
   };
@@ -98,7 +101,11 @@ function initSettings() {
     ...loaded,
     wechat: { ...defaults.wechat, ...(loaded.wechat || {}) },
     dify: { ...defaults.dify, ...(loaded.dify || {}) },
-    rules: Array.isArray(loaded.rules) ? loaded.rules : defaults.rules,
+    rules: (Array.isArray(loaded.rules) ? loaded.rules : defaults.rules).map((rule) => ({
+      // 旧规则缺省补齐群内提问配置（ask.nameApiKey 未配置时提问实际不生效）
+      ...rule,
+      ask: { enabled: true, nameApiKey: '', ...(rule.ask || {}) },
+    })),
     aliases: Array.isArray(loaded.aliases) ? loaded.aliases : defaults.aliases,
   };
 }
@@ -118,6 +125,7 @@ function getPublicState() {
       logRawMessage: Boolean(current.wechat.logRawMessage),
       hasToken: Boolean(current.wechat.token),
       botWxid: current.wechat.botWxid || '',
+      fileAppId: current.wechat.fileAppId || 'ID_10001',
     },
     dify: { ...current.dify },
     rules: current.rules.map((rule) => ({
@@ -127,11 +135,12 @@ function getPublicState() {
       enabled: Boolean(rule.enabled),
       trigger: rule.trigger,
       action: rule.action,
-      startKeywords: Array.isArray(rule.startKeywords) ? rule.startKeywords : [],
       summaryKeywords: Array.isArray(rule.summaryKeywords) ? rule.summaryKeywords : [],
-      endKeywords: Array.isArray(rule.endKeywords) ? rule.endKeywords : [],
-      sessionTimeoutHours: rule.sessionTimeoutHours || 12,
       teamName: rule.teamName || '',
+      ask: {
+        enabled: !rule.ask || rule.ask.enabled !== false,
+        hasAskNameKey: Boolean(rule.ask && rule.ask.nameApiKey),
+      },
       groups: (rule.groups || []).map((group) => ({
         id: group.id,
         name: group.name,
@@ -196,6 +205,9 @@ function buildWechat(input, current) {
     botWxid: Object.prototype.hasOwnProperty.call(data, 'botWxid')
       ? String(data.botWxid || '').trim()
       : (current.botWxid || ''),
+    fileAppId: Object.prototype.hasOwnProperty.call(data, 'fileAppId')
+      ? String(data.fileAppId || '').trim() || 'ID_10001'
+      : (current.fileAppId || 'ID_10001'),
   };
 }
 
@@ -240,7 +252,8 @@ function buildRule(input, existing) {
   const name = requiredText(data.name, '规则名称', 40);
   const trigger = data.trigger || 'location';
   const action = data.action || 'dify';
-  if (!['location', 'treeWatch'].includes(trigger)) throw createError('触发条件仅支持位置消息或树木排查会话');
+  // 内部键 treeWatch 保留（数据兼容），展示名=输电班组运维
+  if (!['location', 'treeWatch'].includes(trigger)) throw createError('触发条件仅支持位置消息或输电班组运维');
   if (action !== 'dify') throw createError('当前仅支持 Dify Workflow 动作');
   if (!Array.isArray(data.groups) || !data.groups.length) throw createError('请至少配置一个监听群');
   if (data.groups.length > 100) throw createError('单条规则最多配置 100 个监听群');
@@ -279,27 +292,32 @@ function buildRule(input, existing) {
     action,
     groups,
   };
+  // 群内提问：开关 + 文件名生成工作流（WF3）Key；提问实际启用条件=开关开且 Key 非空
+  const prevAsk = (existing && existing.ask) || {};
+  const askInput = data.ask && typeof data.ask === 'object' ? data.ask : {};
+  if (Object.prototype.hasOwnProperty.call(askInput, 'enabled') && typeof askInput.enabled !== 'boolean') {
+    throw createError('群内提问开关必须是布尔值');
+  }
+  const askNameKey = String(askInput.nameApiKey || '').trim() || prevAsk.nameApiKey || '';
+  if (askNameKey.length > 200) throw createError('文件名生成工作流 API Key 不能超过 200 个字符');
   if (trigger === 'treeWatch') {
-    const timeoutHours = Number(Object.prototype.hasOwnProperty.call(data, 'sessionTimeoutHours') ? data.sessionTimeoutHours : existing ? existing.sessionTimeoutHours : 12);
-    if (!Number.isInteger(timeoutHours) || timeoutHours < 1 || timeoutHours > 72) throw createError('会话超时必须是 1-72 的整数小时');
-    rule.startKeywords = normalizeKeywords(data.startKeywords, existing && existing.startKeywords && existing.startKeywords.length ? existing.startKeywords : ['开始记录树障', '开始记录', '开始排查']);
+    // 全天候捕获：仅保留汇总关键词（缺省「汇总」，上限 20）与归属班组
     rule.summaryKeywords = normalizeKeywords(data.summaryKeywords, existing && existing.summaryKeywords && existing.summaryKeywords.length ? existing.summaryKeywords : ['汇总']);
-    rule.endKeywords = normalizeKeywords(data.endKeywords, existing && existing.endKeywords && existing.endKeywords.length ? existing.endKeywords : ['结束', '结束记录']);
-    // 向后兼容：「汇总」已拆为独立步骤指令，旧配置 endKeywords 中混入的汇总词随本次保存剔除
-    rule.endKeywords = rule.endKeywords.filter((k) => !rule.summaryKeywords.includes(k));
-    if (!rule.endKeywords.length) rule.endKeywords = ['结束', '结束记录'];
-    rule.sessionTimeoutHours = timeoutHours;
-    // 归属班组（壹匣推送 team_name）：仅树木排查规则可配，可空，最长 32
+    // 归属班组（壹匣推送 team_name / 群内提问会话命名）：仅输电班组运维规则可配，可空，最长 32
     const teamName = String(Object.prototype.hasOwnProperty.call(data, 'teamName') ? data.teamName : (existing && existing.teamName) || '').trim();
     if (teamName.length > 32) throw createError('归属班组不能超过 32 个字符');
     rule.teamName = teamName;
+    rule.ask = {
+      enabled: Object.prototype.hasOwnProperty.call(askInput, 'enabled')
+        ? askInput.enabled
+        : (prevAsk.enabled === undefined ? true : Boolean(prevAsk.enabled)),
+      nameApiKey: askNameKey,
+    };
   } else {
-    if (String(data.teamName || '').trim()) throw createError('仅树木排查（会话捕获）规则支持配置归属班组');
-    if (existing && Array.isArray(existing.startKeywords)) rule.startKeywords = existing.startKeywords;
+    if (String(data.teamName || '').trim()) throw createError('仅输电班组运维规则支持配置归属班组');
     if (existing && Array.isArray(existing.summaryKeywords)) rule.summaryKeywords = existing.summaryKeywords;
-    if (existing && Array.isArray(existing.endKeywords)) rule.endKeywords = existing.endKeywords;
-    if (existing && existing.sessionTimeoutHours) rule.sessionTimeoutHours = existing.sessionTimeoutHours;
     if (existing && existing.teamName) rule.teamName = existing.teamName;
+    if (existing && existing.ask) rule.ask = existing.ask;
   }
   return rule;
 }

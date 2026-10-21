@@ -23,7 +23,7 @@ const lines = require('./lines');
 const store = require('./inspection/store');
 const { buildSessionWorkbook, exportFileName } = require('./inspection/export');
 const { sendSessionXlsx } = require('./inspection/deliver');
-const { pushSession } = require('./inspection/push');
+const { pushSession, pushRecord } = require('./inspection/push');
 
 const SESSION_COOKIE = 'crane_session';
 const SESSION_TTL_MS = 12 * 60 * 60 * 1000;
@@ -202,17 +202,13 @@ function createApp({ client }) {
   }));
   app.get('/api/inspection/sessions/:id', (req, res) => {
     const session = store.getSession(req.params.id);
-    if (!session) return res.status(404).json({ ok: false, error: { message: '会话不存在' } });
+    if (!session) return res.status(404).json({ ok: false, error: { message: '日桶不存在' } });
     return ok(res, session);
   });
-  app.post('/api/inspection/sessions/:id/end', (req, res) => {
-    const session = store.endSession(req.params.id, 'manual');
-    if (!session) return res.status(409).json({ ok: false, error: { message: '会话不存在或已结束' } });
-    return ok(res, session);
-  });
+  // 仅删本地日桶，不联动壹匣删除已上报记录
   app.delete('/api/inspection/sessions/:id', (req, res) => {
     if (!store.deleteSession(req.params.id)) {
-      return res.status(404).json({ ok: false, error: { message: '会话不存在' } });
+      return res.status(404).json({ ok: false, error: { message: '日桶不存在' } });
     }
     return ok(res, { deleted: true });
   });
@@ -239,7 +235,7 @@ function createApp({ client }) {
   });
   app.get('/api/inspection/sessions/:id/export.xlsx', asyncRoute(async (req, res) => {
     const session = store.getSession(req.params.id);
-    if (!session) return res.status(404).json({ ok: false, error: { message: '会话不存在' } });
+    if (!session) return res.status(404).json({ ok: false, error: { message: '日桶不存在' } });
     const workbook = await buildSessionWorkbook(session);
     const fileName = exportFileName(session);
     res.set('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
@@ -249,20 +245,28 @@ function createApp({ client }) {
   }));
   app.post('/api/inspection/sessions/:id/send', asyncRoute(async (req, res) => {
     const session = store.getSession(req.params.id);
-    if (!session) return res.status(404).json({ ok: false, error: { message: '会话不存在' } });
-    if (!session.records.length) return res.status(400).json({ ok: false, error: { message: '会话没有记录，无法发送' } });
+    if (!session) return res.status(404).json({ ok: false, error: { message: '日桶不存在' } });
+    if (!session.records.length) return res.status(400).json({ ok: false, error: { message: '日桶没有记录，无法发送' } });
     const result = await sendSessionXlsx(session);
     return ok(res, result);
   }));
+  // 桶级推送：把该日桶全部有效记录以 direct 模式整体重推壹匣
   app.post('/api/inspection/sessions/:id/push', asyncRoute(async (req, res) => {
     const session = store.getSession(req.params.id);
-    if (!session) return res.status(404).json({ ok: false, error: { message: '会话不存在' } });
-    const mode = String((req.body && req.body.mode) || '');
-    if (!['direct', 'staging'].includes(mode)) {
-      return res.status(400).json({ ok: false, error: { message: '推送模式仅支持 direct / staging' } });
+    if (!session) return res.status(404).json({ ok: false, error: { message: '日桶不存在' } });
+    const result = await pushSession(session, 'direct', { wxid: '', name: `管理端 ${req.session.username}` });
+    if (!result.ok) return res.status(502).json({ ok: false, error: { message: result.message } });
+    return ok(res, result);
+  }));
+  // 单条记录重推壹匣（实时推送失败后的手动补推）
+  app.post('/api/inspection/sessions/:id/records/:rid/push', asyncRoute(async (req, res) => {
+    const bucket = store.getSession(req.params.id);
+    if (!bucket) return res.status(404).json({ ok: false, error: { message: '日桶不存在' } });
+    const found = store.findRecord(req.params.rid);
+    if (!found || found.session.id !== bucket.id) {
+      return res.status(404).json({ ok: false, error: { message: '记录不存在' } });
     }
-    const result = await pushSession(session, mode, { wxid: '', name: `管理端 ${req.session.username}` },
-      String((req.body && req.body.review_note) || ''));
+    const result = await pushRecord(bucket, found.record);
     if (!result.ok) return res.status(502).json({ ok: false, error: { message: result.message } });
     return ok(res, result);
   }));

@@ -1,6 +1,6 @@
 {
   "name": "wechat-dify-bot",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "private": true,
   "description": "监听微信群消息并调用 Dify API 的后端服务",
   "main": "src/index.js",
@@ -15,6 +15,7 @@
     "dotenv": "^16.4.5",
     "exceljs": "^4.4.0",
     "express": "^4.22.3",
+    "silk-wasm": "^3.7.1",
     "ws": "^8.18.0"
   }
 }
