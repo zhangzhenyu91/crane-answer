@@ -182,14 +182,9 @@
     $('ruleTableBody').innerHTML = state.rules.map(function (rule) {
       var chips = rule.groups.slice(0, 2).map(function (group) { return '<span class="group-chip">' + esc(group.name || '未命名群') + '</span>'; }).join('');
       if (rule.groups.length > 2) chips += '<span class="group-chip">+' + (rule.groups.length - 2) + '</span>';
-      var triggerCell;
-      if (rule.trigger === 'treeWatch') {
-        triggerCell = '<td><span class="tag tag-green">输电班组运维</span><div class="cell-sub mono">树木排查 + 群内提问</div></td>';
-      } else if (rule.trigger === 'crossWatch') {
-        triggerCell = '<td><span class="tag tag-green">输电班组运维</span><div class="cell-sub mono">交跨排查</div></td>';
-      } else {
-        triggerCell = '<td><span class="tag tag-blue">位置消息</span><div class="cell-sub mono">kind=location</div></td>';
-      }
+      var triggerCell = rule.trigger === 'treeWatch'
+        ? '<td><span class="tag tag-green">输电班组运维</span><div class="cell-sub mono">树木排查 + 交跨排查 + 群内提问</div></td>'
+        : '<td><span class="tag tag-blue">位置消息</span><div class="cell-sub mono">kind=location</div></td>';
       return '<tr>' +
         '<td><div class="rule-name">' + esc(rule.name) + (rule.isDefault ? '<span class="tag tag-blue">默认规则</span>' : '') + '</div><div class="cell-sub" title="' + esc(rule.id) + '">规则编号 ' + esc(rule.id.slice(-8)) + '</div></td>' +
         '<td><div class="group-chips">' + (chips || '<span class="cell-sub">未配置监听群</span>') + '</div><div class="cell-sub">共 ' + rule.groups.length + ' 个群</div></td>' +
@@ -206,16 +201,17 @@
       $('groupList').innerHTML = '<div class="empty" style="padding:24px"><p>尚未添加监听群，请点击右上角“添加监听群”</p></div>';
       return;
     }
-    var trigger = $('ruleTrigger').value;
-    var isOpsWatch = trigger === 'treeWatch' || trigger === 'crossWatch'; // 输电班组运维两类规则：提取 + 更正双 Key
+    var isTreeWatch = $('ruleTrigger').value === 'treeWatch';
     $('groupList').innerHTML = state.editingGroups.map(function (group, index) {
       return '<div class="group-item" data-group-index="' + index + '">' +
         '<div class="group-item-head"><strong>监听群 ' + (index + 1) + '</strong>' + (group.hasKey ? '<span class="tag tag-green status-dot">Key 已配置</span>': '<span class="tag tag-orange">待配置 Key</span>') + '<button class="icon-btn" type="button" data-remove-group="' + index + '" aria-label="删除监听群">' + icon('trash', 14) + '</button></div>' +
         '<div class="group-fields">' +
           '<div class="form-field"><label>群备注 <span class="required">*</span></label><input class="input" data-group-field="name" value="' + esc(group.name) + '" placeholder="如：东区吊车协调群" autocomplete="off"></div>' +
           '<div class="form-field"><label>群 ID <span class="required">*</span></label><input class="input mono" data-group-field="groupId" value="' + esc(group.groupId) + '" placeholder="如：100860001@chatroom" autocomplete="off"></div>' +
-          '<div class="form-field"><label>' + (isOpsWatch ? '提取工作流 API Key' : 'Dify API Key') + ' <span class="required">*</span></label><input class="input" type="password" data-group-field="key" value="' + esc(group.key || '') + '" placeholder="' + (group.hasKey ? '留空则保持已保存 Key' : '请输入 app-xxxxxxxx') + '" autocomplete="new-password"></div>' +
-          (isOpsWatch ? '<div class="form-field"><label>更正提取 API Key <span class="required">*</span></label><input class="input" type="password" data-group-field="correctKey" value="' + esc(group.correctKey || '') + '" placeholder="' + (group.hasCorrectKey ? '留空则保持已保存 Key' : '请输入更正工作流 app-xxxxxxxx') + '" autocomplete="new-password"></div>' : '') +
+          '<div class="form-field"><label>' + (isTreeWatch ? '提取工作流 API Key' : 'Dify API Key') + ' <span class="required">*</span></label><input class="input" type="password" data-group-field="key" value="' + esc(group.key || '') + '" placeholder="' + (group.hasKey ? '留空则保持已保存 Key' : '请输入 app-xxxxxxxx') + '" autocomplete="new-password"></div>' +
+          (isTreeWatch ? '<div class="form-field"><label>更正提取 API Key <span class="required">*</span></label><input class="input" type="password" data-group-field="correctKey" value="' + esc(group.correctKey || '') + '" placeholder="' + (group.hasCorrectKey ? '留空则保持已保存 Key' : '请输入更正工作流 app-xxxxxxxx') + '" autocomplete="new-password"></div>' : '') +
+          (isTreeWatch ? '<div class="form-field"><label>交跨提取 API Key（可空）</label><input class="input" type="password" data-group-field="crossingKey" value="' + esc(group.crossingKey || '') + '" placeholder="' + (group.hasCrossingKey ? '留空则保持已保存 Key' : '留空则不捕获交跨报送') + '" autocomplete="new-password"></div>' : '') +
+          (isTreeWatch ? '<div class="form-field"><label>交跨更正 API Key（可空）</label><input class="input" type="password" data-group-field="crossingCorrectKey" value="' + esc(group.crossingCorrectKey || '') + '" placeholder="' + (group.hasCrossingCorrectKey ? '留空则保持已保存 Key' : '留空则不启用交跨更正') + '" autocomplete="new-password"></div>' : '') +
         '</div>' +
       '</div>';
     }).join('');
@@ -227,29 +223,25 @@
   }
 
   function syncTriggerFields() {
-    var trigger = $('ruleTrigger').value;
-    var isOpsWatch = trigger === 'treeWatch' || trigger === 'crossWatch';
-    var isTreeWatch = trigger === 'treeWatch';
-    $('treeWatchFields').hidden = !isOpsWatch;
+    var isTreeWatch = $('ruleTrigger').value === 'treeWatch';
+    $('treeWatchFields').hidden = !isTreeWatch;
     $('askFields').hidden = !isTreeWatch;
-    if (isTreeWatch) {
-      $('ruleTriggerHint').textContent = '输电班组运维：全天候监听捕获，命中捕获条件的消息逐条调用提取工作流并实时推送壹匣，引用记录的消息调用更正工作流；@监听账号 可发「汇总」（当天 xlsx 发群）、「报送」（重推当天全部记录）或直接提问（见「群内提问」）。';
-    } else if (trigger === 'crossWatch') {
-      $('ruleTriggerHint').textContent = '输电班组运维 / 交跨排查：全天候监听捕获交叉跨越报送（交叉/跨越/交跨特征词 + 杆号），逐条调用提取工作流并实时推送壹匣，引用记录的消息调用更正工作流；@监听账号 可发「汇总」（当天交跨 xlsx 发群）或「报送」（重推当天全部记录）；无群内提问、无辅证照片。';
-    } else {
-      $('ruleTriggerHint').textContent = '仅当群成员发送有效位置消息时触发，自动提取经纬度、位置名称和发送者信息。';
-    }
+    $('ruleTriggerHint').textContent = isTreeWatch
+      ? '输电班组运维：全天候监听捕获，按消息内容分流——树木排查（杆号+特征词）与交跨排查（交叉/跨越/交跨+杆号，需配置交跨提取 Key）各归各的日桶，逐条调用提取工作流并实时推送壹匣，引用记录的消息按记录类型调用对应更正工作流；@监听账号 可发「汇总」（两类当天 xlsx 发群）、「报送」（两类当天全部记录重推）或直接提问（见「群内提问」）。'
+      : '仅当群成员发送有效位置消息时触发，自动提取经纬度、位置名称和发送者信息。';
     updateAskHint();
   }
 
   function openRuleEditor(rule) {
     state.editingRuleId = rule ? rule.id : null;
-    state.editingGroups = rule ? clone(rule.groups) : [{ name: '', groupId: '', hasKey: false, key: '', hasCorrectKey: false, correctKey: '' }];
+    state.editingGroups = rule ? clone(rule.groups) : [{ name: '', groupId: '', hasKey: false, key: '', hasCorrectKey: false, correctKey: '', hasCrossingKey: false, crossingKey: '', hasCrossingCorrectKey: false, crossingCorrectKey: '' }];
     $('ruleModalTitle').textContent = rule ? '编辑监听规则' : '新建监听规则';
     $('ruleName').value = rule ? rule.name : '';
-    $('ruleTrigger').value = rule && (rule.trigger === 'treeWatch' || rule.trigger === 'crossWatch') ? rule.trigger : 'location';
+    $('ruleTrigger').value = rule && rule.trigger === 'treeWatch' ? 'treeWatch' : 'location';
     $('ruleSummaryKeywords').value = rule && rule.summaryKeywords && rule.summaryKeywords.length ? rule.summaryKeywords.join(', ') : '汇总';
     $('ruleTeamName').value = rule && rule.teamName ? rule.teamName : '';
+    $('ruleDigestKey').value = '';
+    $('ruleDigestKey').placeholder = rule && rule.hasDigestKey ? '留空则保持已保存 Key' : '留空不启用；请输入 app-xxxxxxxx';
     var ask = (rule && rule.ask) || {};
     var askOn = rule ? ask.enabled !== false : true;
     $('ruleAskEnabledSwitch').classList.toggle('on', askOn);
@@ -347,14 +339,17 @@
       var name = $('ruleName').value.trim();
       if (!name) throw new Error('请输入规则名称');
       if (!state.editingGroups.length) throw new Error('请至少添加一个监听群');
-      var trigger = ['treeWatch', 'crossWatch'].includes($('ruleTrigger').value) ? $('ruleTrigger').value : 'location';
+      var trigger = $('ruleTrigger').value === 'treeWatch' ? 'treeWatch' : 'location';
       var groups = state.editingGroups.map(function (group, index) {
         if (!group.name.trim() || !group.groupId.trim()) throw new Error('请完整填写监听群 ' + (index + 1) + ' 的备注和群 ID');
         if (!group.hasKey && !(group.key || '').trim()) throw new Error('请填写监听群 ' + (index + 1) + ' 的 Dify API Key');
         var item = { id: group.id, name: group.name.trim(), groupId: group.groupId.trim(), key: (group.key || '').trim() };
-        if (trigger === 'treeWatch' || trigger === 'crossWatch') {
+        if (trigger === 'treeWatch') {
           if (!group.hasCorrectKey && !(group.correctKey || '').trim()) throw new Error('请填写监听群 ' + (index + 1) + ' 的更正提取 API Key');
           item.correctKey = (group.correctKey || '').trim();
+          // 交跨子能力 Key 可空：留空提交保持已保存值（后端同 apiKey 口径），从未配置则不启用交跨
+          item.crossingKey = (group.crossingKey || '').trim();
+          item.crossingCorrectKey = (group.crossingCorrectKey || '').trim();
         }
         return item;
       });
@@ -365,7 +360,7 @@
         action: 'dify',
         groups: groups,
       };
-      if (trigger === 'treeWatch' || trigger === 'crossWatch') {
+      if (trigger === 'treeWatch') {
         var splitKeywords = function (raw) {
           return raw.split(/[,，]/).map(function (item) { return item.trim(); }).filter(Boolean);
         };
@@ -373,15 +368,14 @@
         if (!payload.summaryKeywords.length) throw new Error('请填写汇总关键词');
         payload.teamName = $('ruleTeamName').value.trim();
         if (payload.teamName.length > 32) throw new Error('归属班组不能超过 32 个字符');
-        // 群内提问仅 treeWatch：crossWatch 规则不上送 ask（后端也不保存）
-        if (trigger === 'treeWatch') {
-          var askNameKey = $('ruleAskNameKey').value.trim();
-          if (askNameKey.length > 200) throw new Error('文件名生成工作流 API Key 不能超过 200 个字符');
-          payload.ask = {
-            enabled: $('ruleAskEnabledSwitch').classList.contains('on'),
-            nameApiKey: askNameKey,
-          };
-        }
+        payload.digestKey = $('ruleDigestKey').value.trim();
+        if (payload.digestKey.length > 200) throw new Error('聊天日志总结工作流 API Key 不能超过 200 个字符');
+        var askNameKey = $('ruleAskNameKey').value.trim();
+        if (askNameKey.length > 200) throw new Error('文件名生成工作流 API Key 不能超过 200 个字符');
+        payload.ask = {
+          enabled: $('ruleAskEnabledSwitch').classList.contains('on'),
+          nameApiKey: askNameKey,
+        };
       }
       var editing = Boolean(state.editingRuleId);
       var data = await api(editing ? '/api/rules/' + encodeURIComponent(state.editingRuleId) : '/api/rules', {

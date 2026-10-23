@@ -2,7 +2,9 @@
 """
 Dify 自定义代码节点脚本（MiMo 等不支持结构化输出的模型适用）。
 WF1 / WF2 / WF1c 三段各自完整自包含（含 import），整段复制粘贴即可，入口函数均为 main。
-WF2c（交跨更正提取）输出与 WF2 相同（action / patches / reason），直接复用 WF2 段即可。
+WF1c（交跨报送提取）配置在 treeWatch 规则每群的「交跨提取 API Key」（可空，留空=该群不启用
+交跨排查）；WF2c（交跨更正提取）对应「交跨更正 API Key」，代码段输出与 WF2 相同
+（action / patches / reason），直接复用 WF2 段即可。
 
 接线（各段相同）：LLM 节点输出 → 代码节点输入变量 text（String）。
 

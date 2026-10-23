@@ -2,6 +2,7 @@ const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 const config = require('../config');
+const imageStore = require('../wechatpadpro/imageStore');
 
 let state = null;
 
@@ -26,6 +27,59 @@ function beijingDateString(unixSeconds) {
   const d = new Date((Number(unixSeconds) + 8 * 3600) * 1000);
   const pad = (n) => String(n).padStart(2, '0');
   return `${d.getUTCFullYear()}-${pad(d.getUTCMonth() + 1)}-${pad(d.getUTCDate())}`;
+}
+
+/** 同群当天日桶 ID（北京时间自然天）：kind='crossing' 交跨桶带 '_crossing' 后缀，缺省树障保持旧 ID */
+function todayBucketId(groupId, kind = 'tree') {
+  const crossing = kind === 'crossing';
+  return `${groupId}_${beijingDateString(Math.floor(Date.now() / 1000))}${crossing ? '_crossing' : ''}`;
+}
+
+/** 北京时间当天 'yyyy-MM-dd'（日桶日期口径，供调用方做跨天判断） */
+function beijingToday() {
+  return beijingDateString(Math.floor(Date.now() / 1000));
+}
+
+/**
+ * 桶 ID 是否属于北京时间当天：桶 ID 形态为 `<群ID>_<yyyy-MM-dd>[_crossing]`，
+ * 群 ID 本身可能含下划线，故去掉 `_crossing` 后缀后取末段下划线后的日期比对。
+ */
+function isTodayBucketId(bucketId, today) {
+  const base = bucketId.endsWith('_crossing') ? bucketId.slice(0, -'_crossing'.length) : bucketId;
+  const idx = base.lastIndexOf('_');
+  return idx >= 0 && base.slice(idx + 1) === today;
+}
+
+/**
+ * 日桶自动销毁：只保留北京时间当天的日桶（树障桶与交跨桶一视同仁），过期桶整体清除。
+ * 取舍（README 已注明）：桶内未推送成功（pushStatus 非 ok）的记录随桶销毁、此后不再补推，
+ * 已推送壹匣的记录不受影响（壹匣侧留存）；pendingDeletes 删除事件队列不动（快照独立仍需补推）。
+ * 桶内记录的辅证照片：缓存条目按记录 id 反查清除，本地文件逐个删除（失败仅记日志）。
+ * 需在 initStore/initImageStore 之后调用。
+ * @returns {number} 清除的日桶数量
+ */
+function purgeExpiredBuckets() {
+  const today = beijingToday();
+  const current = getState();
+  const expired = current.buckets.filter((bucket) => !isTodayBucketId(bucket.id, today));
+  if (!expired.length) return 0;
+  console.log(`[排查日桶] 自动销毁 ${expired.length} 个非当天日桶：${expired.map((bucket) => bucket.id).join('，')}`);
+  for (const bucket of expired) {
+    for (const record of bucket.records) {
+      for (const entry of imageStore.findByRecordId(record.id)) imageStore.removeImage(entry.svrId);
+      for (const photo of record.photos || []) {
+        try {
+          imageStore.deleteFile(photo.file);
+        } catch (err) {
+          console.error(`[排查日桶] 过期桶辅证照片清理失败（桶 ${bucket.id}，文件 ${photo.file}）：${err.message}`);
+        }
+      }
+    }
+  }
+  const expiredIds = new Set(expired.map((bucket) => bucket.id));
+  current.buckets = current.buckets.filter((bucket) => !expiredIds.has(bucket.id));
+  persist();
+  return expired.length;
 }
 
 /**
@@ -140,7 +194,7 @@ function bucketKind(bucket) {
 function getTodayBucket(groupId, meta = {}) {
   const now = Math.floor(Date.now() / 1000);
   const kind = meta.kind === 'crossing' ? 'crossing' : 'tree';
-  const bucketId = `${groupId}_${beijingDateString(now)}${kind === 'crossing' ? '_crossing' : ''}`;
+  const bucketId = todayBucketId(groupId, kind);
   const existing = getState().buckets.find((item) => item.id === bucketId);
   if (existing) return existing;
   const bucket = {
@@ -167,8 +221,7 @@ function getTodayBucket(groupId, meta = {}) {
 
 /** 该群今天指定类型（kind，缺省 tree）日桶内的全部有效（status=active）记录 */
 function listTodayRecords(groupId, kind = 'tree') {
-  const crossing = kind === 'crossing';
-  const bucketId = `${groupId}_${beijingDateString(Math.floor(Date.now() / 1000))}${crossing ? '_crossing' : ''}`;
+  const bucketId = todayBucketId(groupId, kind);
   const bucket = getState().buckets.find((item) => item.id === bucketId);
   if (!bucket) return [];
   return bucket.records.filter((item) => item.status === 'active');
@@ -497,6 +550,23 @@ function findRecallTarget(groupId, senderId, windowSec = 180, kind = 'tree') {
     : null;
 }
 
+/**
+ * 同群当天两类日桶（树障/交跨）内依次定位记录：先树障桶、后交跨桶，
+ * msgId（引用 svr_id）优先，content（引用原文）兜底。
+ * 引用更正等需要跨桶定位的场景使用。
+ * @returns {{ session: object, record: object, kind: 'tree'|'crossing' } | null}
+ */
+function findTodayRecord(groupId, { msgId = '', content = '' } = {}) {
+  for (const kind of ['tree', 'crossing']) {
+    const session = getState().buckets.find((item) => item.id === todayBucketId(groupId, kind));
+    if (!session) continue;
+    const record = (msgId && findRecordByMsgId(session, msgId))
+      || (content && findRecordByContent(session, content));
+    if (record) return { session, record, kind };
+  }
+  return null;
+}
+
 function assignRecordLine(recordId, matchedLine) {
   const found = findRecord(recordId);
   if (!found) return null;
@@ -510,6 +580,8 @@ function assignRecordLine(recordId, matchedLine) {
 module.exports = {
   initStore,
   bucketKind,
+  beijingToday,
+  purgeExpiredBuckets,
   getTodayBucket,
   listTodayRecords,
   addRecord,
@@ -530,6 +602,7 @@ module.exports = {
   listUnpushedRecords,
   findRecentLineBySender,
   findRecallTarget,
+  findTodayRecord,
   assignRecordLine,
   enqueuePendingDelete,
   listPendingDeletes,

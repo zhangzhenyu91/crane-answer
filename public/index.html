@@ -219,7 +219,7 @@
           <div class="form-field"><span class="field-label">启用状态</span><div class="switch-field"><button class="switch on" id="ruleEnabledSwitch" type="button" role="switch" aria-checked="true"></button><span class="switch-label" id="ruleEnabledText">启用</span></div></div>
         </div>
         <div class="form-grid" style="margin-top:14px">
-          <div class="form-field full"><label for="ruleTrigger">消息类型</label><select class="input" id="ruleTrigger"><option value="location">位置消息（kind=location）</option><option value="treeWatch">输电班组运维（treeWatch）</option><option value="crossWatch">输电班组运维 / 交跨排查</option></select><p class="field-hint" id="ruleTriggerHint">仅当群成员发送有效位置消息时触发，自动提取经纬度、位置名称和发送者信息。</p></div>
+          <div class="form-field full"><label for="ruleTrigger">消息类型</label><select class="input" id="ruleTrigger"><option value="location">位置消息（kind=location）</option><option value="treeWatch">输电班组运维（treeWatch）</option></select><p class="field-hint" id="ruleTriggerHint">仅当群成员发送有效位置消息时触发，自动提取经纬度、位置名称和发送者信息。</p></div>
         </div>
       </section>
       <section class="form-section">
@@ -232,7 +232,13 @@
           <div class="form-field"><label for="ruleSummaryKeywords">汇总关键词</label><input class="input" id="ruleSummaryKeywords" placeholder="汇总" autocomplete="off"><p class="field-hint">逗号分隔；@监听账号且内容含任一关键词即把当天记录的汇总 xlsx 发到群，可重复汇总。</p></div>
           <div class="form-field"><label for="ruleTeamName">归属班组（壹匣）</label><input class="input" id="ruleTeamName" maxlength="32" placeholder="如：检修一班" autocomplete="off"><p class="field-hint">记录实时推送与「报送」重推时作为 team_name 上报；留空则该规则记录无法推送。</p></div>
         </div>
-        <p class="field-hint">引用已捕获记录的消息将调用「更正提取」工作流（每群需单独配置更正 API Key），输入为 correction_text / quoted_text / current_record。</p>
+        <p class="field-hint">引用已捕获记录的消息将调用「更正提取」工作流（每群需单独配置更正 API Key），输入为 correction_text / quoted_text / current_record；交跨记录则由「交跨更正 API Key」路由到 WF2c。</p>
+        <p class="field-hint">交跨提取 / 交跨更正 API Key 均可空：配置后该群同时捕获交叉跨越报送（WF1c 提取、WF2c 更正，推送壹匣「交跨记录」应用），留空则不启用交跨排查。</p>
+        <div class="form-field full" style="margin-top:14px">
+          <label for="ruleDigestKey">聊天日志总结工作流 API Key（WF4，可空）</label>
+          <input class="input" id="ruleDigestKey" type="password" placeholder="请输入 app-xxxxxxxx" autocomplete="new-password">
+          <p class="field-hint">留空不启用；启用后每天定时（北京时间 <code>CHATLOG_DIGEST_TIME</code>，默认 23:26）把未被规则消费的消息总结为当日纪要、连同未消费的文档类文件推送壹匣写入 WeKnora 知识库。</p>
+        </div>
       </section>
       <section class="form-section" id="askFields" hidden>
         <div class="section-head"><h3>群内提问</h3><span>以成员壹匣账号身份调 Call Me</span></div>

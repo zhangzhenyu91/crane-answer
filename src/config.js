@@ -19,5 +19,7 @@ module.exports = {
     baseUrl: String(process.env.YIXIA_BASE_URL || '').replace(/\/+$/, ''),
     token: String(process.env.YIXIA_INGEST_TOKEN || '').trim(),
   },
+  // 聊天日志兜底归档的每日执行时点（北京时间 HH:mm，见 src/inspection/chatlog.js）
+  chatlogDigestTime: process.env.CHATLOG_DIGEST_TIME || '23:26',
   legacy: process.env,
 };

@@ -86,6 +86,36 @@ function persist() {
   fs.renameSync(temp, file);
 }
 
+/**
+ * v0.8.0 一次性迁移：独立 crossWatch 规则并入 treeWatch 规则——每个群按 groupId 并入覆盖同群的
+ * treeWatch 规则（apiKey→crossingApiKey、correctApiKey→crossingCorrectApiKey，目标群已有交跨 Key 不覆盖），
+ * 随后删除 crossWatch 规则并留痕；某群没有任何 treeWatch 规则覆盖时降级丢弃该群并日志提示需到管理页重配。
+ * @returns {boolean} 是否发生迁移（发生则立即落盘）
+ */
+function migrateCrossWatchRules(rules) {
+  const crossRules = rules.filter((rule) => rule.trigger === 'crossWatch');
+  if (!crossRules.length) return false;
+  const treeRules = rules.filter((rule) => rule.trigger === 'treeWatch');
+  for (const crossRule of crossRules) {
+    for (const group of crossRule.groups || []) {
+      const targetRule = treeRules.find((rule) => (rule.groups || []).some((item) => item.groupId === group.groupId));
+      const target = targetRule && targetRule.groups.find((item) => item.groupId === group.groupId);
+      if (!target) {
+        console.warn(`[settings] v0.8.0 迁移：crossWatch 规则“${crossRule.name}”的群 ${group.groupId} 无 treeWatch 规则覆盖，交跨配置已丢弃，请到管理页重新配置`);
+        continue;
+      }
+      if (!target.crossingApiKey && group.apiKey) target.crossingApiKey = group.apiKey;
+      if (!target.crossingCorrectApiKey && group.correctApiKey) target.crossingCorrectApiKey = group.correctApiKey;
+      console.log(`[settings] v0.8.0 迁移：crossWatch 规则“${crossRule.name}”群 ${group.groupId} 的交跨 Key 已并入 treeWatch 规则“${targetRule.name}”`);
+    }
+  }
+  const kept = rules.filter((rule) => rule.trigger !== 'crossWatch');
+  rules.length = 0;
+  rules.push(...kept);
+  console.log(`[settings] v0.8.0 迁移完成：已删除 ${crossRules.length} 条 crossWatch 规则`);
+  return true;
+}
+
 function initSettings() {
   fs.mkdirSync(config.dataDir, { recursive: true });
   const file = settingsFile();
@@ -108,6 +138,8 @@ function initSettings() {
     })),
     aliases: Array.isArray(loaded.aliases) ? loaded.aliases : defaults.aliases,
   };
+  // v0.8.0 独立 crossWatch 规则并入 treeWatch 规则（交跨降为规则内子能力），有迁移则立即落盘
+  if (migrateCrossWatchRules(settings.rules)) persist();
 }
 
 function getSettings() {
@@ -137,6 +169,7 @@ function getPublicState() {
       action: rule.action,
       summaryKeywords: Array.isArray(rule.summaryKeywords) ? rule.summaryKeywords : [],
       teamName: rule.teamName || '',
+      hasDigestKey: Boolean(rule.digestApiKey),
       ask: {
         enabled: !rule.ask || rule.ask.enabled !== false,
         hasAskNameKey: Boolean(rule.ask && rule.ask.nameApiKey),
@@ -147,6 +180,8 @@ function getPublicState() {
         groupId: group.groupId,
         hasKey: Boolean(group.apiKey),
         hasCorrectKey: Boolean(group.correctApiKey),
+        hasCrossingKey: Boolean(group.crossingApiKey),
+        hasCrossingCorrectKey: Boolean(group.crossingCorrectApiKey),
       })),
     })),
     aliases: clone(current.aliases),
@@ -252,8 +287,8 @@ function buildRule(input, existing) {
   const name = requiredText(data.name, '规则名称', 40);
   const trigger = data.trigger || 'location';
   const action = data.action || 'dify';
-  // 内部键 treeWatch / crossWatch 保留（数据兼容），展示名以管理页为准
-  if (!['location', 'treeWatch', 'crossWatch'].includes(trigger)) throw createError('触发条件仅支持位置消息、树木排查或交跨排查');
+  // 内部键 treeWatch 保留（数据兼容），展示名=输电班组运维（树木排查 + 交跨排查 + 群内提问）
+  if (!['location', 'treeWatch'].includes(trigger)) throw createError('触发条件仅支持位置消息或输电班组运维');
   if (action !== 'dify') throw createError('当前仅支持 Dify Workflow 动作');
   if (!Array.isArray(data.groups) || !data.groups.length) throw createError('请至少配置一个监听群');
   if (data.groups.length > 100) throw createError('单条规则最多配置 100 个监听群');
@@ -274,10 +309,13 @@ function buildRule(input, existing) {
       groupId,
       apiKey,
     };
-    if (trigger === 'treeWatch' || trigger === 'crossWatch') {
+    if (trigger === 'treeWatch') {
       const correctApiKey = String(group.correctKey || '').trim() || (previous && previous.correctApiKey) || '';
       if (!correctApiKey) throw createError(`请填写监听群 ${index + 1} 的更正提取 Dify API Key`);
       entry.correctApiKey = correctApiKey;
+      // 交跨子能力（可选）：留空=该群不启用交跨捕获/更正；留空提交保持已保存值（与 apiKey 同口径，不可清空）
+      entry.crossingApiKey = String(group.crossingKey || '').trim() || (previous && previous.crossingApiKey) || '';
+      entry.crossingCorrectApiKey = String(group.crossingCorrectKey || '').trim() || (previous && previous.crossingCorrectApiKey) || '';
     } else if (previous && previous.correctApiKey) {
       entry.correctApiKey = previous.correctApiKey;
     }
@@ -300,22 +338,23 @@ function buildRule(input, existing) {
   }
   const askNameKey = String(askInput.nameApiKey || '').trim() || prevAsk.nameApiKey || '';
   if (askNameKey.length > 200) throw createError('文件名生成工作流 API Key 不能超过 200 个字符');
-  if (trigger === 'treeWatch' || trigger === 'crossWatch') {
+  if (trigger === 'treeWatch') {
     // 全天候捕获：仅保留汇总关键词（缺省「汇总」，上限 20）与归属班组
     rule.summaryKeywords = normalizeKeywords(data.summaryKeywords, existing && existing.summaryKeywords && existing.summaryKeywords.length ? existing.summaryKeywords : ['汇总']);
     // 归属班组（壹匣推送 team_name / 群内提问会话命名）：仅输电班组运维规则可配，可空，最长 32
     const teamName = String(Object.prototype.hasOwnProperty.call(data, 'teamName') ? data.teamName : (existing && existing.teamName) || '').trim();
     if (teamName.length > 32) throw createError('归属班组不能超过 32 个字符');
     rule.teamName = teamName;
-    // 群内提问仅 treeWatch 配置；crossWatch 规则不生成 ask（管理页也不渲染「群内提问」区块）
-    if (trigger === 'treeWatch') {
-      rule.ask = {
-        enabled: Object.prototype.hasOwnProperty.call(askInput, 'enabled')
-          ? askInput.enabled
-          : (prevAsk.enabled === undefined ? true : Boolean(prevAsk.enabled)),
-        nameApiKey: askNameKey,
-      };
-    }
+    // 聊天日志兜底归档（可选）：WF4 聊天总结工作流 Key，留空=不启用；留空提交保持已保存值
+    const digestApiKey = String(data.digestKey || '').trim() || (existing && existing.digestApiKey) || '';
+    if (digestApiKey.length > 200) throw createError('聊天日志总结工作流 API Key 不能超过 200 个字符');
+    rule.digestApiKey = digestApiKey;
+    rule.ask = {
+      enabled: Object.prototype.hasOwnProperty.call(askInput, 'enabled')
+        ? askInput.enabled
+        : (prevAsk.enabled === undefined ? true : Boolean(prevAsk.enabled)),
+      nameApiKey: askNameKey,
+    };
   } else {
     if (String(data.teamName || '').trim()) throw createError('仅输电班组运维规则支持配置归属班组');
     if (existing && Array.isArray(existing.summaryKeywords)) rule.summaryKeywords = existing.summaryKeywords;

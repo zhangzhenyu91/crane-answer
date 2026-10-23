@@ -5,6 +5,8 @@ const { handleMessage, hasPendingCapture } = require('./wechatpadpro/messageHand
 const { createServer } = require('./server');
 const {
   initStore,
+  beijingToday,
+  purgeExpiredBuckets,
   listUnpushedRecords,
   listPendingDeletes,
   removePendingDelete,
@@ -13,6 +15,7 @@ const {
   shouldNoticePendingDeletes,
 } = require('./inspection/store');
 const { pushRecord, pushDeleteEvent, isRecordPushInFlight } = require('./inspection/push');
+const { runDailyDigests, runStaleDigests } = require('./inspection/chatlog');
 const { initImageStore } = require('./wechatpadpro/imageStore');
 const { initLines } = require('./lines');
 
@@ -22,6 +25,38 @@ const client = new WeChatPadProClient({
 });
 const server = createServer({ client });
 let shuttingDown = false;
+
+// 日桶自动销毁的跨天判断：缓存上次执行日期（北京时间），跨天才触发，不随 60 秒重扫空转
+let lastBucketPurgeDate = '';
+
+// 聊天归档的到点判断：缓存当天已执行标记，跨天重置；到点前不执行
+let lastChatlogRunDate = '';
+
+/**
+ * 排查日桶自动销毁（只保留北京时间当天）：启动时执行一次，之后挂在失败重扫循环里按日期变化触发。
+ */
+function purgeExpiredBucketsIfDateChanged() {
+  const today = beijingToday();
+  if (today === lastBucketPurgeDate) return;
+  lastBucketPurgeDate = today;
+  const removed = purgeExpiredBuckets();
+  if (removed) console.log(`[app] 日桶自动销毁完成：已清除 ${removed} 个过期日桶（仅保留当天）`);
+}
+
+/**
+ * 聊天日志兜底归档的每日定时：到 config.chatlogDigestTime（北京时间 HH:mm）且当天未执行过才触发。
+ */
+function runChatlogDigestIfDue() {
+  const now = new Date(Date.now() + 8 * 3600 * 1000);
+  const pad = (n) => String(n).padStart(2, '0');
+  const hhmm = `${pad(now.getUTCHours())}:${pad(now.getUTCMinutes())}`;
+  const time = /^\d{2}:\d{2}$/.test(config.chatlogDigestTime) ? config.chatlogDigestTime : '23:26';
+  const today = beijingToday();
+  if (hhmm < time || lastChatlogRunDate === today) return;
+  lastChatlogRunDate = today;
+  runDailyDigests()
+    .catch((err) => console.error(`[聊天归档] 定时执行异常：${err.stack || err}`));
+}
 
 // 失败重扫：记录/删除事件距上次推送尝试满 5 分钟才重试，避免与实时推送抢跑
 const PUSH_RETRY_AFTER_SEC = 5 * 60;
@@ -91,17 +126,23 @@ async function main() {
   initSettings();
   initStore();
   initImageStore();
+  purgeExpiredBucketsIfDateChanged();
+  // 次日启动补跑一次历史存量归档（今天的留给定时到点执行）
+  runStaleDigests()
+    .catch((err) => console.error(`[聊天归档] 存量补跑异常：${err.stack || err}`));
   initLines();
   const retryTimer = setInterval(() => {
     Promise.resolve()
+      .then(() => purgeExpiredBucketsIfDateChanged())
+      .then(() => runChatlogDigestIfDue())
       .then(() => rescanPendingDeletes())
       .then(() => rescanPushFailures())
       .catch((err) => console.error(`[壹匣重扫] 失败重扫异常：${err.stack || err}`));
   }, 60 * 1000);
   retryTimer.unref();
   const { wechat, rules } = getSettings();
-  if (!wechat.botWxid && rules.some((rule) => rule.enabled && (rule.trigger === 'treeWatch' || rule.trigger === 'crossWatch'))) {
-    console.warn('[app] 存在已启用的输电班组运维规则（树木排查/交跨排查）但未配置监听账号 wxid，@检测与自身消息排除将不生效');
+  if (!wechat.botWxid && rules.some((rule) => rule.enabled && rule.trigger === 'treeWatch')) {
+    console.warn('[app] 存在已启用的树木排查规则但未配置监听账号 wxid，@检测与自身消息排除将不生效');
   }
   await new Promise((resolve, reject) => {
     server.once('error', reject);

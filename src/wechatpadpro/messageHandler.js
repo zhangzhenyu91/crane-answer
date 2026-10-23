@@ -3,6 +3,7 @@ const config = require('../config');
 const { resolveDisplayName, resolveWxidByName } = require('./memberResolver');
 const { runWorkflow } = require('../dify');
 const store = require('../inspection/store');
+const chatlog = require('../inspection/chatlog');
 const imageStore = require('./imageStore');
 const fileStore = require('./fileStore');
 const { handleGroupAsk } = require('../ask/groupAsk');
@@ -85,18 +86,17 @@ function isRecallEvent(msg) {
  * 待 pending 记录出现时补判。方向性条件：撤回时间 ≥ 报送时间，
  * 避免"先撤回闲聊再报送"误删新记录。
  */
-const pendingRecalls = new Map(); // key：`<groupId>|<kind>`——树障/交跨各自的撤回暂存互不干扰
+const pendingRecalls = new Map();
 
-function stashPendingRecall(groupId, senderId, at, kind = 'tree') {
+function stashPendingRecall(groupId, senderId, at) {
   if (!senderId) return;
-  const key = `${groupId}|${kind}`;
-  const list = (pendingRecalls.get(key) || []).filter((item) => at - item.at <= RECALL_WINDOW_SEC);
+  const list = (pendingRecalls.get(groupId) || []).filter((item) => at - item.at <= RECALL_WINDOW_SEC);
   list.push({ senderId, at });
-  pendingRecalls.set(key, list);
+  pendingRecalls.set(groupId, list);
 }
 
-function popMatchingRecall(groupId, record, kind = 'tree') {
-  const list = pendingRecalls.get(`${groupId}|${kind}`);
+function popMatchingRecall(groupId, record) {
+  const list = pendingRecalls.get(groupId);
   if (!list) return false;
   const idx = list.findIndex((item) => item.senderId === record.senderId
     && item.at >= record.capturedAt
@@ -121,8 +121,8 @@ function purgeRecordPhotos(record) {
 
 /**
  * 撤回事件处理：实时推送的撤回系统消息不含被撤消息 ID（已实测确认），启发式删除——
- * 在该群所有日桶的时间窗内（含跨午夜）把「撤回人最近一条记录」与「撤回人最近一张缓存图片」
- * 放进同一时间线，取较新者：
+ * 记录目标在该群树障/交跨两类日桶的时间窗内（含跨午夜）取较新者，与「撤回人最近一张缓存图片」
+ * （仅树障记录有辅证照片，交跨纯文字台账不参与图片时间线）放进同一时间线比较：
  * - 撤到图片：已挂接记录 → 仅摘删该辅证照片（记录保留）并实时重推该条，群内反馈「已删除辅证照片」；
  *   未挂接 → 静默清缓存；
  * - 撤到记录：先实时推送删除至壹匣（pushDelete；失败入删除重试队列由失败重扫补推，不丢失），
@@ -133,19 +133,21 @@ function purgeRecordPhotos(record) {
  * 局限：同一发送者连续报送时，撤回只能定位到其最近一条消息项，无法精确到被撤的那一条；
  * 「引用图片发文字」后撤回图片的，因记录（引用文字）比图片更新，会按撤记录处理（整条删除）。
  */
-async function handleRecall(msg, group, conversationId, kind = 'tree') {
-  // 每条规则只处理自己类型的日桶：同群并存树障/交跨规则时，撤回事件由两条规则各自过滤定位
-  const logPrefix = kind === 'crossing' ? '[交跨排查]' : '[树木排查]';
+async function handleRecall(msg, group, conversationId) {
   let recallerWxid = msg.sender_id && !String(msg.sender_id).endsWith('@chatroom') ? String(msg.sender_id) : '';
   if (!recallerWxid) {
     const m = String(msg.content || '').match(/^["“](.+?)["”]\s*撤回了一条消息/);
     if (m) recallerWxid = await resolveWxidByName(conversationId, m[1]);
   }
-  // 交跨记录无辅证照片，撤回不参与图片时间线比对（图片缓存由同群 treeWatch 规则自行处理）
-  const recalledImage = kind === 'crossing'
-    ? null
-    : (recallerWxid ? imageStore.findRecallImage(conversationId, recallerWxid, RECALL_WINDOW_SEC) : null);
-  const target = store.findRecallTarget(conversationId, recallerWxid, RECALL_WINDOW_SEC, kind);
+  // 群级撤回定位：图片时间线仅对树障记录生效（交跨为纯文字台账、无辅证照片）；
+  // 记录目标取该群树障桶与交跨桶时间窗内较新者，删除推送按被删记录所在桶 kind 自动选 ingest 地址
+  const recalledImage = recallerWxid ? imageStore.findRecallImage(conversationId, recallerWxid, RECALL_WINDOW_SEC) : null;
+  const treeTarget = store.findRecallTarget(conversationId, recallerWxid, RECALL_WINDOW_SEC, 'tree');
+  const crossTarget = store.findRecallTarget(conversationId, recallerWxid, RECALL_WINDOW_SEC, 'crossing');
+  const target = !treeTarget ? crossTarget
+    : (!crossTarget ? treeTarget
+      : (crossTarget.record.capturedAt > treeTarget.record.capturedAt ? crossTarget : treeTarget));
+  const logPrefix = target && store.bucketKind(target.session) === 'crossing' ? '[交跨排查]' : '[树木排查]';
 
   // 同一时间线取较新者：图片比记录新 → 按「撤回图片」处理（仅删辅证照片，记录保留）
   if (recalledImage && (!target || recalledImage.capturedAt >= target.record.capturedAt)) {
@@ -182,7 +184,7 @@ async function handleRecall(msg, group, conversationId, kind = 'tree') {
 
   if (!target) {
     console.log(`${logPrefix} 撤回事件未命中任何记录（${group.name}，撤回人=${recallerWxid || '-'}），暂存待补判`);
-    stashPendingRecall(conversationId, recallerWxid, Number(msg.created_at) || Math.floor(Date.now() / 1000), kind);
+    stashPendingRecall(conversationId, recallerWxid, Number(msg.created_at) || Math.floor(Date.now() / 1000));
     return;
   }
   // 整条删除：记录先标 deleting 并入删除重试队列（持久化、崩溃安全，且与记录推送重试互斥），
@@ -214,7 +216,7 @@ const FEATURE_WORD_RE = /棵|垂距|垂直|超高|水平/;
 const TREE_WORD_RE = /树|棵/;
 const MEASURE_WORD_RE = /水平|垂距|垂直|超高/;
 const CROSS_EXCLUDE_RE = /交叉|跨越/;
-// 交跨排查（crossWatch）初筛包含特征词：命中其一且含杆号即进 Dify 提取终审
+// 交跨排查（treeWatch 规则内子能力）初筛包含特征词：命中其一且含杆号即进 Dify 提取终审
 const CROSS_INCLUDE_RE = /交叉|跨越|交跨/;
 
 /**
@@ -229,12 +231,26 @@ function passesCaptureGate(text) {
 }
 
 /**
- * 交跨排查初筛（crossWatch 第一层，宽进严出，终审由 Dify is_crossing 完成）：
- * 命中交叉/跨越/交跨特征词且含杆号区间或单杆号；与树障初筛互补，互不混入。
+ * 交跨排查初筛（treeWatch 子能力第一层，宽进严出，终审由 Dify is_crossing 完成）：
+ * 命中交叉/跨越/交跨特征词且含杆号区间或单杆号；命中后还需该群配置交跨提取 Key 才真正捕获。
  */
 function passesCrossingGate(text) {
   if (!CROSS_INCLUDE_RE.test(text)) return false;
   return POLE_RANGE_RE.test(text) || POLE_SINGLE_RE.test(text);
+}
+
+// 聊天归档的文档扩展名白名单（无扩展名文件按「可能含价值信息」口径从宽收录）
+const ARCHIVE_DOC_RE = /\.(pdf|docx?|xlsx?|pptx?|txt|csv|md|ofd|dwg|zip|rar|7z)$/i;
+
+/**
+ * fileStore 媒体缓存条目是否为可归档文档：文件类消息且扩展名在白名单（或无扩展名）。
+ * 视频/语音（kind=video/voice）与图片不进归档清单。
+ */
+function isArchiveDocument(entry) {
+  if (!entry || entry.kind !== 'file') return false;
+  const name = String(entry.fileName || '').trim();
+  if (!name) return false;
+  return ARCHIVE_DOC_RE.test(name) || !/\.[a-zA-Z0-9]{1,8}$/.test(name);
 }
 
 function msgIdOf(msg) {
@@ -527,9 +543,9 @@ async function captureRecord(rule, group, session, msg, senderId, content, photo
 }
 
 /**
- * 交跨排查捕获（crossWatch）：流程仿 captureRecord 裁剪——落 pending → WF1c 提取 → is_crossing 终审 →
+ * 交跨排查捕获（treeWatch 规则内子能力）：流程仿 captureRecord 裁剪——落 pending → WF1c 提取 → is_crossing 终审 →
  * 省略线路按该成员最近一次「交跨」记录补全 + matchLine 归一 → finalize → 引用回执「已记录」→ 实时推送壹匣。
- * 与树障差异：无辅证照片与协作供图人，终审字段为 is_crossing，推送走 crossing ingest。
+ * 与树障差异：提取用该群 crossingApiKey，无辅证照片与协作供图人，终审字段 is_crossing，推送走 crossing ingest。
  */
 async function captureCrossing(rule, group, session, msg, senderId, content) {
   const senderName = await resolveDisplayName(session.groupId, senderId);
@@ -541,7 +557,7 @@ async function captureCrossing(rule, group, session, msg, senderId, content) {
     capturedAt: Number(msg.created_at) || Math.floor(Date.now() / 1000),
     pending: true,
   });
-  if (popMatchingRecall(session.groupId, record, 'crossing')) {
+  if (popMatchingRecall(session.groupId, record)) {
     store.removeRecord(session, record.id);
     console.log(`[交跨排查] 记录落库前检测到对应撤回，已删除且不再提取：${content.slice(0, 40)}`);
     sendText(session.groupId, '已删除')
@@ -550,7 +566,7 @@ async function captureCrossing(rule, group, session, msg, senderId, content) {
   }
   const task = (async () => {
     try {
-      const result = await runWorkflow(group.apiKey, {
+      const result = await runWorkflow(group.crossingApiKey, {
         text: content,
         nickname: senderName,
         wxid: senderId,
@@ -699,33 +715,45 @@ async function handleImageMessage(rule, group, session, msg, senderId, content) 
   }
 }
 
-async function handleCorrection(rule, group, session, msg, senderId, quote) {
-  let record = store.findRecordByMsgId(session, quote.svrid);
-  if (!record) record = store.findRecordByContent(session, quote.content);
-  if (!record) {
+/**
+ * 引用更正（树障/交跨共用）：记录先在同群当天两类日桶内定位（先树障桶、后交跨桶），
+ * 按记录所在桶类型路由更正工作流——树障用 correctApiKey（WF2，含 status 分支），
+ * 交跨用 crossingCorrectApiKey（WF2c，仅 correct/none）；交跨记录未配交跨更正 Key 时记日志忽略。
+ */
+async function handleCorrection(rule, group, conversationId, msg, senderId, quote) {
+  const located = store.findTodayRecord(conversationId, { msgId: quote.svrid, content: quote.content });
+  if (!located) {
     console.log(`[树木排查] 引用消息未命中当日记录（svrid=${quote.svrid || '-'}），忽略`);
     return;
   }
+  const { session, record, kind } = located;
+  const logPrefix = kind === 'crossing' ? '[交跨排查]' : '[树木排查]';
   if (record.status === 'pending') {
     const pending = pendingCaptures.get(record.id);
     if (pending) {
-      console.log(`[树木排查] 记录 ${record.id} 提取进行中，更正等待其完成…`);
+      console.log(`${logPrefix} 记录 ${record.id} 提取进行中，更正等待其完成…`);
       const captured = await pending.promise;
       if (!captured) {
-        console.log(`[树木排查] 目标记录提取未成功（已丢弃），更正忽略：${quote.text.slice(0, 60)}`);
+        console.log(`${logPrefix} 目标记录提取未成功（已丢弃），更正忽略：${quote.text.slice(0, 60)}`);
         return;
       }
     }
   }
   const correctionText = quote.text;
   if (!correctionText) {
-    console.log('[树木排查] 引用消息无更正内容，忽略');
+    console.log(`${logPrefix} 引用消息无更正内容，忽略`);
+    return;
+  }
+  // 按记录所在桶类型路由更正 Key；交跨更正 Key 未配置时忽略（树障更正 Key 为必填，理论上不会缺）
+  const correctKey = kind === 'crossing' ? group.crossingCorrectApiKey : group.correctApiKey;
+  if (!correctKey) {
+    console.log(`${logPrefix} 更正被忽略（监听群 ${group.name} 未配置${kind === 'crossing' ? '交跨更正' : '更正提取'} API Key）：${correctionText.slice(0, 60)}`);
     return;
   }
   const senderName = await resolveDisplayName(session.groupId, senderId);
   let result;
   try {
-    result = await runWorkflow(group.correctApiKey, {
+    result = await runWorkflow(correctKey, {
       correction_text: correctionText,
       quoted_text: quote.content || record.content,
       current_record: JSON.stringify(record.extracted),
@@ -733,15 +761,15 @@ async function handleCorrection(rule, group, session, msg, senderId, quote) {
       wxid: senderId,
     }, { retries: 5 });
   } catch (err) {
-    console.error(`[树木排查] 更正工作流调用失败（重试 5 次后仍失败）：${err.message}`);
+    console.error(`${logPrefix} 更正工作流调用失败（重试 5 次后仍失败）：${err.message}`);
     sendQuote(session.groupId, '更正失败', msg)
-      .then(() => console.log(`[树木排查] 「更正失败」反馈已发送（${record.id}）`))
-      .catch((sendErr) => console.error(`[树木排查] 「更正失败」反馈发送失败：${sendErr.message}`));
+      .then(() => console.log(`${logPrefix} 「更正失败」反馈已发送（${record.id}）`))
+      .catch((sendErr) => console.error(`${logPrefix} 「更正失败」反馈发送失败：${sendErr.message}`));
     return;
   }
   const outputs = parseWorkflowOutputs(result);
   if (!outputs || !outputs.action) {
-    console.warn(`[树木排查] 更正工作流返回无法解析：${JSON.stringify(result).slice(0, 200)}`);
+    console.warn(`${logPrefix} 更正工作流返回无法解析：${JSON.stringify(result).slice(0, 200)}`);
     return;
   }
   let patches = outputs.patches;
@@ -761,16 +789,16 @@ async function handleCorrection(rule, group, session, msg, senderId, quote) {
       bySenderName: senderName,
     });
     store.saveSession(session);
-    console.log(`[树木排查] 记录 ${record.id} 已更正：${JSON.stringify(patches)}（by ${senderName}）`);
+    console.log(`${logPrefix} 记录 ${record.id} 已更正：${JSON.stringify(patches)}（by ${senderName}）`);
     sendQuote(session.groupId, '已更正', msg)
-      .then(() => console.log(`[树木排查] 「已更正」反馈已发送（${record.id}）`))
-      .catch((err) => console.error(`[树木排查] 「已更正」反馈发送失败：${err.message}`));
+      .then(() => console.log(`${logPrefix} 「已更正」反馈已发送（${record.id}）`))
+      .catch((err) => console.error(`${logPrefix} 「已更正」反馈发送失败：${err.message}`));
     // 更正落库后实时重推该条；失败静默落库待重扫
     pushRecord(session, record)
       .then((pushResult) => {
-        if (!pushResult.ok) console.error(`[树木排查] 记录 ${record.id} 更正后重推壹匣失败：${pushResult.message}`);
+        if (!pushResult.ok) console.error(`${logPrefix} 记录 ${record.id} 更正后重推壹匣失败：${pushResult.message}`);
       })
-      .catch((err) => console.error(`[树木排查] 记录 ${record.id} 更正后重推壹匣异常：${err.message}`));
+      .catch((err) => console.error(`${logPrefix} 记录 ${record.id} 更正后重推壹匣异常：${err.message}`));
     return;
   }
   if (outputs.action === 'status') {
@@ -780,87 +808,105 @@ async function handleCorrection(rule, group, session, msg, senderId, quote) {
       bySenderName: senderName,
     });
     store.saveSession(session);
-    console.log(`[树木排查] 记录 ${record.id} 标记状态：${outputs.status || correctionText}（by ${senderName}）`);
+    console.log(`${logPrefix} 记录 ${record.id} 标记状态：${outputs.status || correctionText}（by ${senderName}）`);
     return;
   }
-  console.log(`[树木排查] 更正工作流判定无关（action=${outputs.action}）：${correctionText.slice(0, 60)}`);
+  console.log(`${logPrefix} 更正工作流判定无关（action=${outputs.action}）：${correctionText.slice(0, 60)}`);
 }
 
-/* ------------------------- 报送壹匣指令（treeWatch / crossWatch） ------------------------- */
+/* ------------------------- 报送壹匣指令（treeWatch） ------------------------- */
 
 /**
- * 「汇总」指令共用逻辑（树障/交跨同构）：等待该桶进行中的提取完成后把当天记录汇总 xlsx 发群。
- * kind 决定日桶类型与日志前缀；当天无记录回执「今日暂无记录」。
+ * 「汇总」指令：树障/交跨两类日桶各自等待进行中的提取完成后，有记录的把当天汇总 xlsx 发群
+ * （两类各有记录则各发一份，无记录的那类不发）；统一回执「今日汇总表已发送」，
+ * 两类都无记录回执「今日暂无记录」。未配置交跨 Key 的群不触碰交跨桶。
  */
-async function handleSummaryCommand(msg, rule, group, conversationId, kind = 'tree') {
-  const logPrefix = kind === 'crossing' ? '[交跨排查]' : '[树木排查]';
-  const bucket = store.getTodayBucket(conversationId, {
-    ruleId: rule.id,
-    ruleName: rule.name,
-    groupName: group.name,
-    teamName: rule.teamName,
-    kind,
-  });
-  const pendingCount = [...pendingCaptures.values()].filter((item) => item.sessionId === bucket.id).length;
-  if (pendingCount) console.log(`${logPrefix} 汇总指令：等待 ${pendingCount} 条进行中的提取完成…`);
-  await flushSessionCaptures(bucket.id);
-  const current = store.getSession(bucket.id);
-  const activeCount = current.records.filter((item) => item.status === 'active').length;
-  if (activeCount) {
+async function handleSummaryCommand(msg, rule, group, conversationId) {
+  let sentAny = false;
+  for (const kind of ['tree', 'crossing']) {
+    if (kind === 'crossing' && !group.crossingApiKey) continue;
+    const logPrefix = kind === 'crossing' ? '[交跨排查]' : '[树木排查]';
+    const bucket = store.getTodayBucket(conversationId, {
+      ruleId: rule.id,
+      ruleName: rule.name,
+      groupName: group.name,
+      teamName: rule.teamName,
+      kind,
+    });
+    const pendingCount = [...pendingCaptures.values()].filter((item) => item.sessionId === bucket.id).length;
+    if (pendingCount) console.log(`${logPrefix} 汇总指令：等待 ${pendingCount} 条进行中的提取完成…`);
+    await flushSessionCaptures(bucket.id);
+    const current = store.getSession(bucket.id);
+    const activeCount = current.records.filter((item) => item.status === 'active').length;
+    if (!activeCount) {
+      console.log(`${logPrefix} 今日无记录，跳过群内发送`);
+      continue;
+    }
     try {
       const { fileName, bytes } = await sendSessionXlsx(current);
+      sentAny = true;
       console.log(`${logPrefix} 今日汇总已发送至群：${fileName}（${bytes} 字节）`);
-      sendQuote(conversationId, '今日汇总表已发送', msg)
-        .catch((err) => console.error(`${logPrefix} 「今日汇总表已发送」回执发送失败：${err.message}`));
     } catch (err) {
       console.error(`${logPrefix} 汇总发送失败：${err.stack || err}`);
     }
+  }
+  if (sentAny) {
+    sendQuote(conversationId, '今日汇总表已发送', msg)
+      .catch((err) => console.error(`[树木排查] 「今日汇总表已发送」回执发送失败：${err.message}`));
   } else {
-    console.log(`${logPrefix} 今日无记录，跳过群内发送`);
+    console.log('[树木排查] 今日无记录，跳过群内发送');
     sendQuote(conversationId, '今日暂无记录', msg)
-      .catch((err) => console.error(`${logPrefix} 「今日暂无记录」回执发送失败：${err.message}`));
+      .catch((err) => console.error(`[树木排查] 「今日暂无记录」回执发送失败：${err.message}`));
   }
 }
 
 /**
- * 群内 @监听账号 的「报送」指令：把当天日桶全部有效记录以 direct 模式整体重推壹匣
- * （兜底补推用；实时推送已逐条上送，重推幂等覆盖）。回执统一用纯文本 sendText。
+ * 群内 @监听账号 的「报送」指令：当天树障桶与交跨桶各自以 direct 模式整体重推壹匣
+ * （兜底补推用；实时推送已逐条上送，重推幂等覆盖；push 层按桶 kind 自动选 ingest 地址）。
+ * 回执合并为一条：「今日树木 N 条、交跨 M 条已重新报送壹匣」（仅一类有记录时只提一类），
+ * 两类都无记录回「今日暂无记录」。回执统一用纯文本 sendText。
  */
-async function handleYixiaPushCommand(conversationId, senderId, rule, group, kind = 'tree') {
+async function handleYixiaPushCommand(conversationId, senderId, rule, group) {
   const reply = (text) => sendText(conversationId, text)
     .catch((err) => console.error(`[报送壹匣] 回执发送失败：${err.message}`));
   if (!config.yixia.baseUrl || !config.yixia.token) {
     await reply('未配置壹匣推送');
     return;
   }
-  const records = store.listTodayRecords(conversationId, kind);
-  if (!records.length) {
+  const meta = { ruleId: rule.id, ruleName: rule.name, groupName: group.name, teamName: rule.teamName };
+  const results = [];
+  for (const kind of ['tree', 'crossing']) {
+    const records = store.listTodayRecords(conversationId, kind);
+    if (!records.length) continue;
+    const bucket = store.getTodayBucket(conversationId, { ...meta, kind });
+    const senderName = await resolveDisplayName(conversationId, senderId);
+    const result = await pushSession(bucket, 'direct', { wxid: senderId, name: senderName })
+      .catch((err) => ({ ok: false, message: err.message }));
+    if (!result.ok) {
+      await reply(`报送失败：${result.message}`);
+      return;
+    }
+    results.push({ kind, count: records.length });
+  }
+  if (!results.length) {
     await reply('今日暂无记录');
     return;
   }
-  const bucket = store.getTodayBucket(conversationId, {
-    ruleId: rule.id,
-    ruleName: rule.name,
-    groupName: group.name,
-    teamName: rule.teamName,
-    kind,
-  });
-  const senderName = await resolveDisplayName(conversationId, senderId);
-  const result = await pushSession(bucket, 'direct', { wxid: senderId, name: senderName })
-    .catch((err) => ({ ok: false, message: err.message }));
-  if (!result.ok) {
-    await reply(`报送失败：${result.message}`);
-    return;
-  }
-  console.log(`[报送壹匣] 当天日桶 ${bucket.id} 整体重推成功（${records.length} 条）`);
-  await reply(`今日 ${records.length} 条记录已重新报送壹匣`);
+  console.log(`[报送壹匣] 当天日桶整体重推成功（${results.map((item) => `${item.kind}=${item.count}`).join('，')}）`);
+  const parts = results.map((item) => (item.kind === 'crossing' ? `交跨 ${item.count} 条` : `树木 ${item.count} 条`));
+  await reply(`今日${parts.join('、')}已重新报送壹匣`);
 }
 
+/**
+ * 输电班组运维消息入口（treeWatch）：树障/交跨双漏斗 + 群内提问。
+ * 返回是否消费该消息——消费（true）= 不进入聊天日志兜底归档；未消费（false）由调用方收集。
+ * @returns {Promise<boolean>}
+ */
 async function handleTreeWatchMessage(msg, rule, group, conversationId, senderId, content) {
   const { wechat } = getSettings();
   const botWxid = (wechat.botWxid || '').trim();
-  if (msg.direction === 'outgoing') return;
-  if (botWxid && senderId === botWxid) return;
+  if (msg.direction === 'outgoing') return true;
+  if (botWxid && senderId === botWxid) return true;
 
   if (await botMentioned(msg, content, conversationId, wechat)) {
     const commandText = stripMentions(content);
@@ -868,20 +914,22 @@ async function handleTreeWatchMessage(msg, rule, group, conversationId, senderId
     // 避免备注文本里混入「汇总」等关键词被误吞
     if (commandText === '报送') {
       await handleYixiaPushCommand(conversationId, senderId, rule, group);
-      return;
+      return true;
     }
-    // 汇总：把当天日桶记录的汇总 xlsx 发群（全天候捕获下不涉及会话生命周期）
+    // 汇总：树障/交跨两类日桶各自有记录则各发一份当天汇总 xlsx 到群
     const summaryKeywords = Array.isArray(rule.summaryKeywords) && rule.summaryKeywords.length ? rule.summaryKeywords : ['汇总'];
     if (summaryKeywords.some((k) => commandText.includes(k))) {
-      await handleSummaryCommand(msg, rule, group, conversationId, 'tree');
-      return;
+      await handleSummaryCommand(msg, rule, group, conversationId);
+      return true;
     }
     // 群内提问：@监听账号 未命中「报送」全等与汇总关键词后按六形态提问（未启用时静默忽略）
     await handleGroupAsk({ msg, rule, group, conversationId, senderId, content, commandText, quote: extractQuote(msg, content) });
-    return;
+    return true;
   }
 
-  // 全天候捕获：自动取/建当天日桶（北京时间自然天，跨天自动换桶），不再有「未开始」闸门
+  // 全天候捕获：自动取/建当天树障日桶（北京时间自然天，跨天自动换桶），不再有「未开始」闸门。
+  // 树障/交跨双漏斗分流：交跨闸（交叉|跨越|交跨 + 杆号）命中走交跨桶（需该群配交跨提取 Key），
+  // 否则走树障闸；两类日桶同群并存、互不混入。
   const session = store.getTodayBucket(conversationId, {
     ruleId: rule.id,
     ruleName: rule.name,
@@ -892,112 +940,136 @@ async function handleTreeWatchMessage(msg, rule, group, conversationId, senderId
   // 图片消息先行分流：裸发缓存备查；引用记录发图 → 挂辅证照片（图片无更正文本，不进更正流程）
   if (String(msg.kind) === 'image' || (msg.image && typeof msg.image === 'object')) {
     await handleImageMessage(rule, group, session, msg, senderId, content);
-    return;
+    return true;
   }
 
   const quote = extractQuote(msg, content);
   if (quote) {
-    // 引用图片发记录文字（app.reference.msg_type=3，或被引用 svr_id 命中图片缓存且非记录）
-    // → 作为新报送捕获并把被引用图片挂为辅证；引用记录文字 → 更正流程（不变）
-    const recordHit = store.findRecordByMsgId(session, quote.svrid);
+    // 先在当天树障/交跨两类日桶内定位记录（先树障后交跨）：命中 → 更正流程（按桶 kind 路由更正 Key）；
+    // 未命中 → 按「引用图片发文字」走捕获，交跨闸优先（命中则不挂辅证），否则树障带辅证
+    const located = store.findTodayRecord(conversationId, { msgId: quote.svrid, content: quote.content });
     const imageHit = quote.svrid ? imageStore.getImage(quote.svrid) : null;
-    const quotingImage = Number(quote.msgType) === 3 || (!recordHit && !!imageHit);
+    const quotingImage = !located && (Number(quote.msgType) === 3 || !!imageHit);
     if (quotingImage) {
       if (!quote.text) {
         console.log(`[树木排查] 引用图片但未附文字（svrid=${quote.svrid}），忽略`);
-        return;
+        return true;
+      }
+      if (passesCrossingGate(quote.text)) {
+        if (!group.crossingApiKey) {
+          console.log(`[交跨排查] 引用图片的交跨报送未被捕获（监听群 ${group.name} 未配置交跨提取 API Key）：${quote.text.slice(0, 60)}`);
+          return true;
+        }
+        const crossingSession = store.getTodayBucket(conversationId, {
+          ruleId: rule.id,
+          ruleName: rule.name,
+          groupName: group.name,
+          teamName: rule.teamName,
+          kind: 'crossing',
+        });
+        await captureCrossing(rule, group, crossingSession, msg, senderId, quote.text);
+        return true;
       }
       if (!passesCaptureGate(quote.text)) {
         console.log(`[树木排查] 引用图片的文字未过初筛，忽略：${quote.text.slice(0, 60)}`);
-        return;
+        return true;
       }
       await captureRecord(rule, group, session, msg, senderId, quote.text, quote.svrid);
-      return;
+      return true;
     }
-    await handleCorrection(rule, group, session, msg, senderId, quote);
-    return;
+    await handleCorrection(rule, group, conversationId, msg, senderId, quote);
+    return true;
   }
 
-  // 文件/视频/语音等媒体消息：解析下载参数缓存备查（群内提问引用时用），不进捕获
+  // 文件/视频/语音等媒体消息：解析下载参数缓存备查（群内提问引用时用），不进捕获。
+  // 文档类文件（fileStore 参数缓存不算业务消费）照样记入聊天归档清单。
   if (msg.kind && !['text', 'quote', 'app'].includes(String(msg.kind))) {
-    fileStore.cacheMedia(msg, conversationId, senderId);
-    return;
+    const mediaEntry = fileStore.cacheMedia(msg, conversationId, senderId);
+    if (mediaEntry && isArchiveDocument(mediaEntry)) collectDocumentAsync(conversationId, group, mediaEntry, msg, senderId);
+    return true;
   }
   if (!content || content.trim().startsWith('<')) {
     // app 形态的文件/视频/语音消息内容为 XML：仍尝试解析缓存下载参数备查（群内提问引用时用）
-    if (content && content.trim().startsWith('<')) fileStore.cacheMedia(msg, conversationId, senderId);
-    return;
+    if (content && content.trim().startsWith('<')) {
+      const mediaEntry = fileStore.cacheMedia(msg, conversationId, senderId);
+      if (mediaEntry && isArchiveDocument(mediaEntry)) collectDocumentAsync(conversationId, group, mediaEntry, msg, senderId);
+    }
+    return true;
   }
-  if (!passesCaptureGate(content)) return;
+  // 双漏斗：交跨闸优先（命中即交跨捕获；未配交跨 Key 记日志忽略，算消费、不进兜底）
+  if (passesCrossingGate(content)) {
+    if (!group.crossingApiKey) {
+      console.log(`[交跨排查] 交跨报送未被捕获（监听群 ${group.name} 未配置交跨提取 API Key）：${content.slice(0, 60)}`);
+      return true;
+    }
+    const crossingSession = store.getTodayBucket(conversationId, {
+      ruleId: rule.id,
+      ruleName: rule.name,
+      groupName: group.name,
+      teamName: rule.teamName,
+      kind: 'crossing',
+    });
+    await captureCrossing(rule, group, crossingSession, msg, senderId, content.trim());
+    return true;
+  }
+  if (!passesCaptureGate(content)) return false;
   await captureRecord(rule, group, session, msg, senderId, content.trim());
+  return true;
+}
+
+/** 文档类文件进聊天归档清单（发送者显示名异步解析后登记，失败仅记日志） */
+function collectDocumentAsync(conversationId, group, mediaEntry, msg, senderId) {
+  resolveDisplayName(conversationId, senderId)
+    .then((senderName) => chatlog.collectDocument(conversationId, group.name, mediaEntry, msg, senderId, senderName))
+    .catch((err) => console.error(`[聊天归档] 文档登记失败（${group.name}）：${err.message}`));
+}
+
+/** 该群是否绑定了启用中的 treeWatch 规则，是则返回首个匹配的群配置（聊天归档的收集范围） */
+function boundTreeWatchGroup(rules, conversationId) {
+  for (const rule of rules) {
+    if (!rule.enabled || rule.trigger !== 'treeWatch') continue;
+    const group = (rule.groups || []).find((item) => item.groupId === conversationId);
+    if (group) return group;
+  }
+  return null;
 }
 
 /**
- * 交跨排查消息入口（crossWatch）：仿 handleTreeWatchMessage 裁剪——
- * @监听账号 仅「报送」（整体重推）与汇总关键词（当天交跨 xlsx 发群）两条指令，无群内提问（未命中静默忽略）；
- * 图片消息直接忽略（无辅证机制，不缓存——图片缓存由同群 treeWatch 规则处理）；
- * 引用记录文字 → 更正流程（复用 handleCorrection，WF2c 无 status 分支，correct/none 通用）；
- * 「引用图片发文字」忽略并记日志；普通文字过 passesCrossingGate 后 captureCrossing 捕获。
+ * 规则分发：返回该消息是否被任一规则消费（消费 = 不进入聊天日志兜底归档）。
+ * 同一消息在多个规则间的消费状态取并集；处理异常视为已消费，避免异常消息进归档。
  */
-async function handleCrossWatchMessage(msg, rule, group, conversationId, senderId, content) {
-  const { wechat } = getSettings();
-  const botWxid = (wechat.botWxid || '').trim();
-  if (msg.direction === 'outgoing') return;
-  if (botWxid && senderId === botWxid) return;
-
-  if (await botMentioned(msg, content, conversationId, wechat)) {
-    const commandText = stripMentions(content);
-    // 「报送」指令锚定判定（全等），优先于关键词包含判定
-    if (commandText === '报送') {
-      await handleYixiaPushCommand(conversationId, senderId, rule, group, 'crossing');
-      return;
+async function dispatchRules(msg, conversationId, senderId, content) {
+  const { rules } = getSettings();
+  let consumed = false;
+  const tasks = [];
+  for (const rule of rules) {
+    if (!rule.enabled) continue;
+    const group = (rule.groups || []).find((item) => item.groupId === conversationId && item.apiKey);
+    if (!group) continue;
+    if (rule.trigger === 'location' && rule.action === 'dify') {
+      if (msg.kind !== 'location' || !msg.location) continue;
+      consumed = true; // 位置消息由位置规则消费
+      handleLocationTrigger(msg, conversationId, group.apiKey, rule.name)
+        .catch((err) => console.error(`[触发] 规则“${rule.name}”处理失败：${err.stack || err}`));
+    } else if (rule.trigger === 'treeWatch' && rule.action === 'dify') {
+      if (isRecallEvent(msg)) {
+        handleRecall(msg, group, conversationId)
+          .catch((err) => console.error(`[树木排查] 规则“${rule.name}”撤回处理失败：${err.stack || err}`));
+        consumed = true;
+        continue;
+      }
+      tasks.push(
+        handleTreeWatchMessage(msg, rule, group, conversationId, senderId, content)
+          .then((hit) => { if (hit) consumed = true; })
+          .catch((err) => {
+            consumed = true;
+            console.error(`[树木排查] 规则“${rule.name}”处理失败：${err.stack || err}`);
+          }),
+      );
     }
-    // 汇总：把当天交跨日桶记录的汇总 xlsx 发群
-    const summaryKeywords = Array.isArray(rule.summaryKeywords) && rule.summaryKeywords.length ? rule.summaryKeywords : ['汇总'];
-    if (summaryKeywords.some((k) => commandText.includes(k))) {
-      await handleSummaryCommand(msg, rule, group, conversationId, 'crossing');
-      return;
-    }
-    // 交跨排查无群内提问：未命中指令的 @ 消息静默忽略
-    return;
   }
-
-  // 图片消息直接忽略：交跨为纯文字台账，无辅证机制（裸图缓存由同群 treeWatch 规则负责）
-  if (String(msg.kind) === 'image' || (msg.image && typeof msg.image === 'object')) {
-    return;
-  }
-
-  const session = store.getTodayBucket(conversationId, {
-    ruleId: rule.id,
-    ruleName: rule.name,
-    groupName: group.name,
-    teamName: rule.teamName,
-    kind: 'crossing',
-  });
-
-  const quote = extractQuote(msg, content);
-  if (quote) {
-    // 引用图片发文字：交跨无辅证机制，忽略并记日志；引用记录文字 → 更正流程（与树障同一分流逻辑）
-    const recordHit = store.findRecordByMsgId(session, quote.svrid);
-    const imageHit = quote.svrid ? imageStore.getImage(quote.svrid) : null;
-    const quotingImage = Number(quote.msgType) === 3 || (!recordHit && !!imageHit);
-    if (quotingImage) {
-      console.log(`[交跨排查] 引用图片发文字（svrid=${quote.svrid}），交跨记录不支持辅证，忽略：${(quote.text || '').slice(0, 60)}`);
-      return;
-    }
-    await handleCorrection(rule, group, session, msg, senderId, quote);
-    return;
-  }
-
-  // 文件/视频/语音等媒体消息：交跨无群内提问，无需缓存下载参数，直接忽略
-  if (msg.kind && !['text', 'quote', 'app'].includes(String(msg.kind))) {
-    return;
-  }
-  if (!content || content.trim().startsWith('<')) {
-    return;
-  }
-  if (!passesCrossingGate(content)) return;
-  await captureCrossing(rule, group, session, msg, senderId, content.trim());
+  await Promise.all(tasks);
+  return consumed;
 }
 
 /**
@@ -1016,34 +1088,15 @@ function handleMessage(msg) {
   );
 
   if (!isGroup) return;
-  const { rules } = getSettings();
-  for (const rule of rules) {
-    if (!rule.enabled) continue;
-    const group = (rule.groups || []).find((item) => item.groupId === conversationId && item.apiKey);
-    if (!group) continue;
-    if (rule.trigger === 'location' && rule.action === 'dify') {
-      if (msg.kind !== 'location' || !msg.location) continue;
-      handleLocationTrigger(msg, conversationId, group.apiKey, rule.name)
-        .catch((err) => console.error(`[触发] 规则“${rule.name}”处理失败：${err.stack || err}`));
-    } else if ((rule.trigger === 'treeWatch' || rule.trigger === 'crossWatch') && rule.action === 'dify') {
-      // 内部键 treeWatch / crossWatch 保留（数据兼容），展示名以管理页为准；
-      // 撤回事件每条规则按自己的桶类型（kind）各自定位处理，互不干扰
-      const kind = rule.trigger === 'crossWatch' ? 'crossing' : 'tree';
-      const logPrefix = kind === 'crossing' ? '[交跨排查]' : '[树木排查]';
-      if (isRecallEvent(msg)) {
-        handleRecall(msg, group, conversationId, kind)
-          .catch((err) => console.error(`${logPrefix} 规则“${rule.name}”撤回处理失败：${err.stack || err}`));
-        continue;
-      }
-      if (kind === 'crossing') {
-        handleCrossWatchMessage(msg, rule, group, conversationId, senderId, content)
-          .catch((err) => console.error(`[交跨排查] 规则“${rule.name}”处理失败：${err.stack || err}`));
-      } else {
-        handleTreeWatchMessage(msg, rule, group, conversationId, senderId, content)
-          .catch((err) => console.error(`[树木排查] 规则“${rule.name}”处理失败：${err.stack || err}`));
-      }
-    }
-  }
+  const treeGroup = boundTreeWatchGroup(getSettings().rules, conversationId);
+  dispatchRules(msg, conversationId, senderId, content)
+    .then(async (consumed) => {
+      // 兜底归档：绑定了启用 treeWatch 规则的群里，走完所有分流仍无人认领的消息
+      if (consumed || !treeGroup) return;
+      const senderName = await resolveDisplayName(conversationId, senderId);
+      chatlog.collectMessage({ conversationId, groupName: treeGroup.name, msg, senderId, senderName, content });
+    })
+    .catch((err) => console.error(`[聊天归档] 兜底收集异常：${err.stack || err}`));
 }
 
 module.exports = { handleMessage, hasPendingCapture };
