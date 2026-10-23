@@ -364,7 +364,8 @@ function flushSessionCaptures(sessionId) {
  * 捕获报送消息：先落库 pending 记录再调 Dify 提取。
  * photoSvrId 可选：「引用图片发记录文字」场景被引用图片的 svr_id——
  * 提取确认是树障后下载该图并挂为记录辅证照片（下载失败不影响记录本体，反馈中带明）。
- * 落库成功后实时推送该条至壹匣（pushStatus=failed 时由失败重扫补推，不在群里刷推送错误）。
+ * 落库成功后实时推送该条至壹匣（失败时引用报送回复「报送失败，请私聊报送班管及超管」；
+ * 记录保留，pushStatus=failed 由失败重扫补推）。
  */
 async function captureRecord(rule, group, session, msg, senderId, content, photoSvrId) {
   const senderName = await resolveDisplayName(session.groupId, senderId);
@@ -467,10 +468,14 @@ async function captureRecord(rule, group, session, msg, senderId, content, photo
       sendQuote(session.groupId, `已记录${photoNote}${lineNote}`, msg)
         .then(() => console.log(`[树木排查] 「已记录」反馈已发送（${record.id}）`))
         .catch((err) => console.error(`[树木排查] 「已记录」反馈发送失败：${err.message}`));
-      // 实时推送该条至壹匣；失败仅落 pushStatus=failed 供失败重扫补推，不在群里刷推送错误
+      // 实时推送该条至壹匣；失败引用报送回复「报送失败，请私聊报送班管及超管」（记录保留，仍由失败重扫补推）
       pushRecord(session, record)
         .then((pushResult) => {
-          if (!pushResult.ok) console.error(`[树木排查] 记录 ${record.id} 实时推送壹匣失败：${pushResult.message}`);
+          if (pushResult.ok) return;
+          console.error(`[树木排查] 记录 ${record.id} 实时推送壹匣失败：${pushResult.message}`);
+          sendQuote(session.groupId, '报送失败，请私聊报送班管及超管', msg)
+            .then(() => console.log(`[树木排查] 「报送失败」反馈已发送（${record.id}）`))
+            .catch((err) => console.error(`[树木排查] 「报送失败」反馈发送失败：${err.message}`));
         })
         .catch((err) => console.error(`[树木排查] 记录 ${record.id} 实时推送壹匣异常：${err.message}`));
       return true;
