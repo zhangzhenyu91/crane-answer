@@ -100,8 +100,8 @@ async function main() {
   }, 60 * 1000);
   retryTimer.unref();
   const { wechat, rules } = getSettings();
-  if (!wechat.botWxid && rules.some((rule) => rule.enabled && rule.trigger === 'treeWatch')) {
-    console.warn('[app] 存在已启用的树木排查规则但未配置监听账号 wxid，@检测与自身消息排除将不生效');
+  if (!wechat.botWxid && rules.some((rule) => rule.enabled && (rule.trigger === 'treeWatch' || rule.trigger === 'crossWatch'))) {
+    console.warn('[app] 存在已启用的输电班组运维规则（树木排查/交跨排查）但未配置监听账号 wxid，@检测与自身消息排除将不生效');
   }
   await new Promise((resolve, reject) => {
     server.once('error', reject);

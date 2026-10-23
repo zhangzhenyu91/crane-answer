@@ -18,6 +18,24 @@ const HEADERS = [
   '发现时间',
 ];
 
+// 交跨排查（crossing）汇总列头：业务 14 列，「序号」导出/汇总时按排序生成（同树障口径）
+const CROSSING_HEADERS = [
+  '序号',
+  '电压等级',
+  '线路名称',
+  '跨越区段',
+  '跨越类型',
+  '交叉点距小号侧距离（m）',
+  '交叉点距大号侧距离（m）',
+  '交叉物距边线水平距离（m）',
+  '交叉垂直距离（m）',
+  '交叉角（°）',
+  '是否存在隐患',
+  '发现人',
+  '巡视时间',
+  '备注',
+];
+
 function text(value) {
   return value == null ? '' : String(value);
 }
@@ -120,17 +138,38 @@ function buildRow(record, seq) {
   ];
 }
 
+/** 交跨排查记录行：列序与 CROSSING_HEADERS 一一对应（区段/侧别距离/发现人复用树障同款格式化） */
+function buildCrossingRow(record, seq) {
+  const ex = record.extracted || {};
+  return [
+    text(seq),
+    record.matchedLine && record.matchedLine.voltage ? `${record.matchedLine.voltage}kV` : '',
+    record.matchedLine ? record.matchedLine.name : (record.lineNameRaw ? `${record.lineNameRaw}（待确认）` : ''),
+    formatSection(record),
+    text(ex.crossing_type).trim(),
+    formatSideDistance(record, 'small'),
+    formatSideDistance(record, 'big'),
+    text(ex.cross_horizontal).trim(),
+    text(ex.cross_vertical).trim(),
+    text(ex.cross_angle).trim(),
+    text(ex.has_hazard).trim(),
+    resolveFinderNames(record),
+    formatFindDate(record.capturedAt),
+    text(ex.remark).trim(),
+  ];
+}
+
 /**
- * 生成会话汇总 xlsx。全部单元格按字符串写入并锁定文本格式（numFmt '@'），
- * 禁止 Excel 自动转为日期或数字。
+ * 生成日桶汇总 xlsx 的共用骨架：全部单元格按字符串写入并锁定文本格式（numFmt '@'），
+ * 禁止 Excel 自动转为日期或数字；排序复用 sortRecords（按线路表顺序分组、组内起始杆号升序）。
  */
-async function buildSessionWorkbook(session) {
+async function buildWorkbook(session, sheetName, headers, widths, rowBuilder) {
   const workbook = new ExcelJS.Workbook();
-  const sheet = workbook.addWorksheet('通道树木排查记录');
-  sheet.columns = HEADERS.map((header, index) => ({
+  const sheet = workbook.addWorksheet(sheetName);
+  sheet.columns = headers.map((header, index) => ({
     header,
     key: `c${index}`,
-    width: [6, 10, 14, 14, 10, 8, 16, 16, 10, 13, 13, 12, 13][index] || 12,
+    width: widths[index] || 12,
     style: { numFmt: '@' },
   }));
   sheet.getRow(1).font = { bold: true };
@@ -138,7 +177,7 @@ async function buildSessionWorkbook(session) {
 
   const records = sortRecords(session.records.filter((item) => item.status === 'active'));
   records.forEach((record, index) => {
-    const row = sheet.addRow(buildRow(record, index + 1));
+    const row = sheet.addRow(rowBuilder(record, index + 1));
     row.eachCell({ includeEmpty: true }, (cell) => {
       cell.numFmt = '@';
       cell.value = cell.value == null ? '' : String(cell.value);
@@ -147,15 +186,41 @@ async function buildSessionWorkbook(session) {
   return workbook;
 }
 
+async function buildTreeSessionWorkbook(session) {
+  return buildWorkbook(session, '通道树木排查记录', HEADERS,
+    [6, 10, 14, 14, 10, 8, 16, 16, 10, 13, 13, 12, 13], buildRow);
+}
+
+/** 交跨排查汇总 xlsx：sheet 名「交叉跨越排查记录」，列见 CROSSING_HEADERS */
+async function buildCrossingSessionWorkbook(session) {
+  return buildWorkbook(session, '交叉跨越排查记录', CROSSING_HEADERS,
+    [6, 10, 14, 12, 26, 20, 20, 26, 14, 10, 12, 12, 13, 24], buildCrossingRow);
+}
+
+/**
+ * 生成日桶汇总 xlsx，按桶类型 kind 分派：交跨桶（kind='crossing'）走交跨列头，
+ * 其余（含旧无 kind 桶）走树障列头。
+ */
+async function buildSessionWorkbook(session) {
+  return session.kind === 'crossing'
+    ? buildCrossingSessionWorkbook(session)
+    : buildTreeSessionWorkbook(session);
+}
+
 function exportFileName(session) {
   const group = (session.groupName || session.groupId || '排查记录').replace(/[\\/:*?"<>|]/g, '_');
-  return `通道树木排查记录_${group}_${formatFindDate(session.startedAt) || '未命名'}.xlsx`;
+  const date = formatFindDate(session.startedAt) || '未命名';
+  return session.kind === 'crossing'
+    ? `交叉跨越排查记录_${group}_${date}.xlsx`
+    : `通道树木排查记录_${group}_${date}.xlsx`;
 }
 
 module.exports = {
   buildSessionWorkbook,
+  buildCrossingSessionWorkbook,
   exportFileName,
   HEADERS,
+  CROSSING_HEADERS,
   formatSection,
   formatVertical,
   formatSideDistance,

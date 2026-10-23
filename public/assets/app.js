@@ -182,9 +182,14 @@
     $('ruleTableBody').innerHTML = state.rules.map(function (rule) {
       var chips = rule.groups.slice(0, 2).map(function (group) { return '<span class="group-chip">' + esc(group.name || '未命名群') + '</span>'; }).join('');
       if (rule.groups.length > 2) chips += '<span class="group-chip">+' + (rule.groups.length - 2) + '</span>';
-      var triggerCell = rule.trigger === 'treeWatch'
-        ? '<td><span class="tag tag-green">输电班组运维</span><div class="cell-sub mono">树木排查 + 群内提问</div></td>'
-        : '<td><span class="tag tag-blue">位置消息</span><div class="cell-sub mono">kind=location</div></td>';
+      var triggerCell;
+      if (rule.trigger === 'treeWatch') {
+        triggerCell = '<td><span class="tag tag-green">输电班组运维</span><div class="cell-sub mono">树木排查 + 群内提问</div></td>';
+      } else if (rule.trigger === 'crossWatch') {
+        triggerCell = '<td><span class="tag tag-green">输电班组运维</span><div class="cell-sub mono">交跨排查</div></td>';
+      } else {
+        triggerCell = '<td><span class="tag tag-blue">位置消息</span><div class="cell-sub mono">kind=location</div></td>';
+      }
       return '<tr>' +
         '<td><div class="rule-name">' + esc(rule.name) + (rule.isDefault ? '<span class="tag tag-blue">默认规则</span>' : '') + '</div><div class="cell-sub" title="' + esc(rule.id) + '">规则编号 ' + esc(rule.id.slice(-8)) + '</div></td>' +
         '<td><div class="group-chips">' + (chips || '<span class="cell-sub">未配置监听群</span>') + '</div><div class="cell-sub">共 ' + rule.groups.length + ' 个群</div></td>' +
@@ -201,15 +206,16 @@
       $('groupList').innerHTML = '<div class="empty" style="padding:24px"><p>尚未添加监听群，请点击右上角“添加监听群”</p></div>';
       return;
     }
-    var isTreeWatch = $('ruleTrigger').value === 'treeWatch';
+    var trigger = $('ruleTrigger').value;
+    var isOpsWatch = trigger === 'treeWatch' || trigger === 'crossWatch'; // 输电班组运维两类规则：提取 + 更正双 Key
     $('groupList').innerHTML = state.editingGroups.map(function (group, index) {
       return '<div class="group-item" data-group-index="' + index + '">' +
         '<div class="group-item-head"><strong>监听群 ' + (index + 1) + '</strong>' + (group.hasKey ? '<span class="tag tag-green status-dot">Key 已配置</span>': '<span class="tag tag-orange">待配置 Key</span>') + '<button class="icon-btn" type="button" data-remove-group="' + index + '" aria-label="删除监听群">' + icon('trash', 14) + '</button></div>' +
         '<div class="group-fields">' +
           '<div class="form-field"><label>群备注 <span class="required">*</span></label><input class="input" data-group-field="name" value="' + esc(group.name) + '" placeholder="如：东区吊车协调群" autocomplete="off"></div>' +
           '<div class="form-field"><label>群 ID <span class="required">*</span></label><input class="input mono" data-group-field="groupId" value="' + esc(group.groupId) + '" placeholder="如：100860001@chatroom" autocomplete="off"></div>' +
-          '<div class="form-field"><label>' + (isTreeWatch ? '提取工作流 API Key' : 'Dify API Key') + ' <span class="required">*</span></label><input class="input" type="password" data-group-field="key" value="' + esc(group.key || '') + '" placeholder="' + (group.hasKey ? '留空则保持已保存 Key' : '请输入 app-xxxxxxxx') + '" autocomplete="new-password"></div>' +
-          (isTreeWatch ? '<div class="form-field"><label>更正提取 API Key <span class="required">*</span></label><input class="input" type="password" data-group-field="correctKey" value="' + esc(group.correctKey || '') + '" placeholder="' + (group.hasCorrectKey ? '留空则保持已保存 Key' : '请输入更正工作流 app-xxxxxxxx') + '" autocomplete="new-password"></div>' : '') +
+          '<div class="form-field"><label>' + (isOpsWatch ? '提取工作流 API Key' : 'Dify API Key') + ' <span class="required">*</span></label><input class="input" type="password" data-group-field="key" value="' + esc(group.key || '') + '" placeholder="' + (group.hasKey ? '留空则保持已保存 Key' : '请输入 app-xxxxxxxx') + '" autocomplete="new-password"></div>' +
+          (isOpsWatch ? '<div class="form-field"><label>更正提取 API Key <span class="required">*</span></label><input class="input" type="password" data-group-field="correctKey" value="' + esc(group.correctKey || '') + '" placeholder="' + (group.hasCorrectKey ? '留空则保持已保存 Key' : '请输入更正工作流 app-xxxxxxxx') + '" autocomplete="new-password"></div>' : '') +
         '</div>' +
       '</div>';
     }).join('');
@@ -221,12 +227,18 @@
   }
 
   function syncTriggerFields() {
-    var isTreeWatch = $('ruleTrigger').value === 'treeWatch';
-    $('treeWatchFields').hidden = !isTreeWatch;
+    var trigger = $('ruleTrigger').value;
+    var isOpsWatch = trigger === 'treeWatch' || trigger === 'crossWatch';
+    var isTreeWatch = trigger === 'treeWatch';
+    $('treeWatchFields').hidden = !isOpsWatch;
     $('askFields').hidden = !isTreeWatch;
-    $('ruleTriggerHint').textContent = isTreeWatch
-      ? '输电班组运维：全天候监听捕获，命中捕获条件的消息逐条调用提取工作流并实时推送壹匣，引用记录的消息调用更正工作流；@监听账号 可发「汇总」（当天 xlsx 发群）、「报送」（重推当天全部记录）或直接提问（见「群内提问」）。'
-      : '仅当群成员发送有效位置消息时触发，自动提取经纬度、位置名称和发送者信息。';
+    if (isTreeWatch) {
+      $('ruleTriggerHint').textContent = '输电班组运维：全天候监听捕获，命中捕获条件的消息逐条调用提取工作流并实时推送壹匣，引用记录的消息调用更正工作流；@监听账号 可发「汇总」（当天 xlsx 发群）、「报送」（重推当天全部记录）或直接提问（见「群内提问」）。';
+    } else if (trigger === 'crossWatch') {
+      $('ruleTriggerHint').textContent = '输电班组运维 / 交跨排查：全天候监听捕获交叉跨越报送（交叉/跨越/交跨特征词 + 杆号），逐条调用提取工作流并实时推送壹匣，引用记录的消息调用更正工作流；@监听账号 可发「汇总」（当天交跨 xlsx 发群）或「报送」（重推当天全部记录）；无群内提问、无辅证照片。';
+    } else {
+      $('ruleTriggerHint').textContent = '仅当群成员发送有效位置消息时触发，自动提取经纬度、位置名称和发送者信息。';
+    }
     updateAskHint();
   }
 
@@ -235,7 +247,7 @@
     state.editingGroups = rule ? clone(rule.groups) : [{ name: '', groupId: '', hasKey: false, key: '', hasCorrectKey: false, correctKey: '' }];
     $('ruleModalTitle').textContent = rule ? '编辑监听规则' : '新建监听规则';
     $('ruleName').value = rule ? rule.name : '';
-    $('ruleTrigger').value = rule && rule.trigger === 'treeWatch' ? 'treeWatch' : 'location';
+    $('ruleTrigger').value = rule && (rule.trigger === 'treeWatch' || rule.trigger === 'crossWatch') ? rule.trigger : 'location';
     $('ruleSummaryKeywords').value = rule && rule.summaryKeywords && rule.summaryKeywords.length ? rule.summaryKeywords.join(', ') : '汇总';
     $('ruleTeamName').value = rule && rule.teamName ? rule.teamName : '';
     var ask = (rule && rule.ask) || {};
@@ -335,12 +347,12 @@
       var name = $('ruleName').value.trim();
       if (!name) throw new Error('请输入规则名称');
       if (!state.editingGroups.length) throw new Error('请至少添加一个监听群');
-      var trigger = $('ruleTrigger').value === 'treeWatch' ? 'treeWatch' : 'location';
+      var trigger = ['treeWatch', 'crossWatch'].includes($('ruleTrigger').value) ? $('ruleTrigger').value : 'location';
       var groups = state.editingGroups.map(function (group, index) {
         if (!group.name.trim() || !group.groupId.trim()) throw new Error('请完整填写监听群 ' + (index + 1) + ' 的备注和群 ID');
         if (!group.hasKey && !(group.key || '').trim()) throw new Error('请填写监听群 ' + (index + 1) + ' 的 Dify API Key');
         var item = { id: group.id, name: group.name.trim(), groupId: group.groupId.trim(), key: (group.key || '').trim() };
-        if (trigger === 'treeWatch') {
+        if (trigger === 'treeWatch' || trigger === 'crossWatch') {
           if (!group.hasCorrectKey && !(group.correctKey || '').trim()) throw new Error('请填写监听群 ' + (index + 1) + ' 的更正提取 API Key');
           item.correctKey = (group.correctKey || '').trim();
         }
@@ -353,7 +365,7 @@
         action: 'dify',
         groups: groups,
       };
-      if (trigger === 'treeWatch') {
+      if (trigger === 'treeWatch' || trigger === 'crossWatch') {
         var splitKeywords = function (raw) {
           return raw.split(/[,，]/).map(function (item) { return item.trim(); }).filter(Boolean);
         };
@@ -361,12 +373,15 @@
         if (!payload.summaryKeywords.length) throw new Error('请填写汇总关键词');
         payload.teamName = $('ruleTeamName').value.trim();
         if (payload.teamName.length > 32) throw new Error('归属班组不能超过 32 个字符');
-        var askNameKey = $('ruleAskNameKey').value.trim();
-        if (askNameKey.length > 200) throw new Error('文件名生成工作流 API Key 不能超过 200 个字符');
-        payload.ask = {
-          enabled: $('ruleAskEnabledSwitch').classList.contains('on'),
-          nameApiKey: askNameKey,
-        };
+        // 群内提问仅 treeWatch：crossWatch 规则不上送 ask（后端也不保存）
+        if (trigger === 'treeWatch') {
+          var askNameKey = $('ruleAskNameKey').value.trim();
+          if (askNameKey.length > 200) throw new Error('文件名生成工作流 API Key 不能超过 200 个字符');
+          payload.ask = {
+            enabled: $('ruleAskEnabledSwitch').classList.contains('on'),
+            nameApiKey: askNameKey,
+          };
+        }
       }
       var editing = Boolean(state.editingRuleId);
       var data = await api(editing ? '/api/rules/' + encodeURIComponent(state.editingRuleId) : '/api/rules', {
@@ -623,6 +638,10 @@
     return value == null || String(value).trim() === '' ? '' : esc(String(value).trim());
   }
 
+  /* 记录明细两套列头：树障（含状态/辅证）与交跨排查（含跨越字段/备注），按桶 kind 切换 */
+  var TREE_RECORD_HEADERS = ['时间', '发现人', '报送原文', '线路名称', '区段', '树种', '数量', '水平', '垂直', '状态', '推送', '辅证', '更正'];
+  var CROSSING_RECORD_HEADERS = ['时间', '发现人', '报送原文', '线路名称', '跨越区段', '跨越类型', '距小号侧（m）', '距大号侧（m）', '水平距离（m）', '垂直距离（m）', '交叉角（°）', '隐患', '备注', '推送', '更正'];
+
   async function loadSessions(showFeedback) {
     var data = await api('/api/inspection/sessions');
     state.sessions = data.sessions || [];
@@ -652,9 +671,11 @@
         + '<button class="text-btn" data-session-action="export" data-id="' + esc(session.id) + '" type="button">导出</button>'
         + '<button class="text-btn" data-session-action="send" data-id="' + esc(session.id) + '" type="button">发至群聊</button>'
         + '<button class="text-btn danger" data-session-action="delete" data-id="' + esc(session.id) + '" type="button">删除</button>';
+      var idParts = String(session.id).split('_');
+      var bucketDate = session.kind === 'crossing' ? idParts.slice(-2, -1)[0] : idParts.pop();
       return '<tr>' +
         '<td><span class="cell-main">' + esc(session.groupName || '未命名群') + '</span><div class="cell-sub mono">' + esc(session.groupId) + '</div></td>' +
-        '<td><span class="cell-main mono">' + esc(String(session.id).split('_').pop()) + '</span><div class="cell-sub">创建于 ' + fmtTime(session.startedAt) + '</div></td>' +
+        '<td>' + (session.kind === 'crossing' ? '<span class="tag tag-blue">交跨</span> ' : '') + '<span class="cell-main mono">' + esc(bucketDate) + '</span><div class="cell-sub">创建于 ' + fmtTime(session.startedAt) + '</div></td>' +
         '<td>' + statusCell + '</td>' +
         '<td>' + countCell + '</td>' +
         '<td><div class="actions">' + actions + '</div></td>' +
@@ -707,16 +728,28 @@
     return from + '#-' + to + '#' + suffix;
   }
 
+  /* 交跨记录侧别距离展示：与 export.js formatSideDistance 同口径（small/both → 小号侧，big → 大号侧） */
+  function recSideDistance(ex, side) {
+    var value = ex.distance == null ? '' : String(ex.distance).trim();
+    if (!value) return '';
+    var recordSide = String(ex.side || '').trim();
+    if (side === 'small') return recordSide === 'small' || recordSide === 'both' ? value : '';
+    return recordSide === 'big' ? value : '';
+  }
+
   function renderRecords() {
     var session = state.currentSession;
     if (!session) return;
+    var isCrossing = session.kind === 'crossing';
+    var headers = isCrossing ? CROSSING_RECORD_HEADERS : TREE_RECORD_HEADERS;
+    $('recordTableHead').innerHTML = headers.map(function (header) { return '<th>' + header + '</th>'; }).join('');
     $('sessionModalTitle').textContent = (session.groupName || '日桶') + ' · 当日记录明细';
-    $('sessionModalSub').textContent = '日桶 ' + session.id + ' · 共 ' + session.records.length + ' 条';
+    $('sessionModalSub').textContent = '日桶 ' + session.id + ' · 共 ' + session.records.length + ' 条' + (isCrossing ? ' · 交跨排查' : '');
     $('sessionPushStatus').textContent = session.pushedAt
       ? (session.pushMode === 'staging' ? '报送暂存' : '报送入库') + ' ' + fmtTime(session.pushedAt) + (session.pushResult ? ' · ' + session.pushResult : '')
       : '';
     if (!session.records.length) {
-      $('recordTableBody').innerHTML = '<tr><td colspan="13"><div class="empty"><p>该日桶没有捕获到记录</p></div></td></tr>';
+      $('recordTableBody').innerHTML = '<tr><td colspan="' + headers.length + '"><div class="empty"><p>该日桶没有捕获到记录</p></div></td></tr>';
       return;
     }
     $('recordTableBody').innerHTML = session.records.map(function (rec) {
@@ -729,10 +762,6 @@
         state.lines.forEach(function (line) { options.push('<option value="' + esc(line.name) + '">' + esc(line.name) + '</option>'); });
         lineCell = '<select class="cell-select" data-assign-line="' + esc(rec.id) + '">' + options.join('') + '</select>';
       }
-      var vertical = ex.over_height != null && String(ex.over_height).trim() !== '' ? '超高' + String(ex.over_height).trim() : showVal(ex.vertical);
-      var statusCell = rec.status === 'pending'
-        ? '<span class="tag tag-blue">解析中</span>'
-        : rec.handledNote ? '<span class="tag tag-green">' + esc(rec.handledNote) + '</span>' : '<span class="tag tag-gray">待处理</span>';
       /* 推送状态：成功绿 / 失败红（tooltip 带失败原因，旁附单条重推）/ 待推送灰 */
       var pushCell;
       if (rec.pushStatus === 'ok') {
@@ -744,6 +773,30 @@
         pushCell = '<span class="tag tag-gray">待推送</span>';
       }
       var corrCount = (rec.correctionHistory || []).filter(function (item) { return item.patches; }).length;
+      /* 树障/交跨共用的前四列：时间 / 发现人 / 报送原文 / 线路名称 */
+      var baseCells = '<td class="cell-sub">' + fmtTime(rec.capturedAt) + '</td>'
+        + '<td>' + esc((rec.senderName || rec.senderId || '-') + (rec.coSenderId ? ' ' + (rec.coSenderName || rec.coSenderId) : '')) + '</td>'
+        + '<td><div class="cell-main" style="max-width:260px;white-space:normal">' + esc(rec.content) + '</div></td>'
+        + '<td>' + lineCell + '</td>';
+      if (isCrossing) {
+        return '<tr>' + baseCells
+          + '<td>' + esc(recSection(ex)) + '</td>'
+          + '<td>' + showVal(ex.crossing_type) + '</td>'
+          + '<td>' + showVal(recSideDistance(ex, 'small')) + '</td>'
+          + '<td>' + showVal(recSideDistance(ex, 'big')) + '</td>'
+          + '<td>' + showVal(ex.cross_horizontal) + '</td>'
+          + '<td>' + showVal(ex.cross_vertical) + '</td>'
+          + '<td>' + showVal(ex.cross_angle) + '</td>'
+          + '<td>' + showVal(ex.has_hazard) + '</td>'
+          + '<td>' + showVal(ex.remark) + '</td>'
+          + '<td>' + pushCell + '</td>'
+          + '<td>' + (corrCount ? '<span class="tag tag-orange">' + corrCount + ' 次</span>' : '-') + '</td>'
+        + '</tr>';
+      }
+      var vertical = ex.over_height != null && String(ex.over_height).trim() !== '' ? '超高' + String(ex.over_height).trim() : showVal(ex.vertical);
+      var statusCell = rec.status === 'pending'
+        ? '<span class="tag tag-blue">解析中</span>'
+        : rec.handledNote ? '<span class="tag tag-green">' + esc(rec.handledNote) + '</span>' : '<span class="tag tag-gray">待处理</span>';
       /* 辅证照片：缩略图点击新标签看原图（附件接口登录态 Cookie 同源自带） */
       var photoCell = (rec.photos && rec.photos.length)
         ? rec.photos.map(function (ph) {
@@ -752,21 +805,17 @@
               + '<img class="ph-thumb" src="/api/inspection/attachments/' + encodeURIComponent(name) + '" alt="辅证照片" loading="lazy"></a>';
           }).join('')
         : '-';
-      return '<tr>' +
-        '<td class="cell-sub">' + fmtTime(rec.capturedAt) + '</td>' +
-        '<td>' + esc((rec.senderName || rec.senderId || '-') + (rec.coSenderId ? ' ' + (rec.coSenderName || rec.coSenderId) : '')) + '</td>' +
-        '<td><div class="cell-main" style="max-width:260px;white-space:normal">' + esc(rec.content) + '</div></td>' +
-        '<td>' + lineCell + '</td>' +
-        '<td>' + esc(recSection(ex)) + '</td>' +
-        '<td>' + showVal(ex.tree_species) + '</td>' +
-        '<td>' + showVal(ex.tree_count) + '</td>' +
-        '<td>' + showVal(ex.horizontal) + '</td>' +
-        '<td>' + vertical + '</td>' +
-        '<td>' + statusCell + '</td>' +
-        '<td>' + pushCell + '</td>' +
-        '<td>' + photoCell + '</td>' +
-        '<td>' + (corrCount ? '<span class="tag tag-orange">' + corrCount + ' 次</span>' : '-') + '</td>' +
-      '</tr>';
+      return '<tr>' + baseCells
+        + '<td>' + esc(recSection(ex)) + '</td>'
+        + '<td>' + showVal(ex.tree_species) + '</td>'
+        + '<td>' + showVal(ex.tree_count) + '</td>'
+        + '<td>' + showVal(ex.horizontal) + '</td>'
+        + '<td>' + vertical + '</td>'
+        + '<td>' + statusCell + '</td>'
+        + '<td>' + pushCell + '</td>'
+        + '<td>' + photoCell + '</td>'
+        + '<td>' + (corrCount ? '<span class="tag tag-orange">' + corrCount + ' 次</span>' : '-') + '</td>'
+      + '</tr>';
     }).join('');
   }
 

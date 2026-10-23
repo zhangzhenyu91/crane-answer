@@ -252,8 +252,8 @@ function buildRule(input, existing) {
   const name = requiredText(data.name, '规则名称', 40);
   const trigger = data.trigger || 'location';
   const action = data.action || 'dify';
-  // 内部键 treeWatch 保留（数据兼容），展示名=输电班组运维
-  if (!['location', 'treeWatch'].includes(trigger)) throw createError('触发条件仅支持位置消息或输电班组运维');
+  // 内部键 treeWatch / crossWatch 保留（数据兼容），展示名以管理页为准
+  if (!['location', 'treeWatch', 'crossWatch'].includes(trigger)) throw createError('触发条件仅支持位置消息、树木排查或交跨排查');
   if (action !== 'dify') throw createError('当前仅支持 Dify Workflow 动作');
   if (!Array.isArray(data.groups) || !data.groups.length) throw createError('请至少配置一个监听群');
   if (data.groups.length > 100) throw createError('单条规则最多配置 100 个监听群');
@@ -274,7 +274,7 @@ function buildRule(input, existing) {
       groupId,
       apiKey,
     };
-    if (trigger === 'treeWatch') {
+    if (trigger === 'treeWatch' || trigger === 'crossWatch') {
       const correctApiKey = String(group.correctKey || '').trim() || (previous && previous.correctApiKey) || '';
       if (!correctApiKey) throw createError(`请填写监听群 ${index + 1} 的更正提取 Dify API Key`);
       entry.correctApiKey = correctApiKey;
@@ -300,19 +300,22 @@ function buildRule(input, existing) {
   }
   const askNameKey = String(askInput.nameApiKey || '').trim() || prevAsk.nameApiKey || '';
   if (askNameKey.length > 200) throw createError('文件名生成工作流 API Key 不能超过 200 个字符');
-  if (trigger === 'treeWatch') {
+  if (trigger === 'treeWatch' || trigger === 'crossWatch') {
     // 全天候捕获：仅保留汇总关键词（缺省「汇总」，上限 20）与归属班组
     rule.summaryKeywords = normalizeKeywords(data.summaryKeywords, existing && existing.summaryKeywords && existing.summaryKeywords.length ? existing.summaryKeywords : ['汇总']);
     // 归属班组（壹匣推送 team_name / 群内提问会话命名）：仅输电班组运维规则可配，可空，最长 32
     const teamName = String(Object.prototype.hasOwnProperty.call(data, 'teamName') ? data.teamName : (existing && existing.teamName) || '').trim();
     if (teamName.length > 32) throw createError('归属班组不能超过 32 个字符');
     rule.teamName = teamName;
-    rule.ask = {
-      enabled: Object.prototype.hasOwnProperty.call(askInput, 'enabled')
-        ? askInput.enabled
-        : (prevAsk.enabled === undefined ? true : Boolean(prevAsk.enabled)),
-      nameApiKey: askNameKey,
-    };
+    // 群内提问仅 treeWatch 配置；crossWatch 规则不生成 ask（管理页也不渲染「群内提问」区块）
+    if (trigger === 'treeWatch') {
+      rule.ask = {
+        enabled: Object.prototype.hasOwnProperty.call(askInput, 'enabled')
+          ? askInput.enabled
+          : (prevAsk.enabled === undefined ? true : Boolean(prevAsk.enabled)),
+        nameApiKey: askNameKey,
+      };
+    }
   } else {
     if (String(data.teamName || '').trim()) throw createError('仅输电班组运维规则支持配置归属班组');
     if (existing && Array.isArray(existing.summaryKeywords)) rule.summaryKeywords = existing.summaryKeywords;

@@ -219,7 +219,7 @@
           <div class="form-field"><span class="field-label">启用状态</span><div class="switch-field"><button class="switch on" id="ruleEnabledSwitch" type="button" role="switch" aria-checked="true"></button><span class="switch-label" id="ruleEnabledText">启用</span></div></div>
         </div>
         <div class="form-grid" style="margin-top:14px">
-          <div class="form-field full"><label for="ruleTrigger">消息类型</label><select class="input" id="ruleTrigger"><option value="location">位置消息（kind=location）</option><option value="treeWatch">输电班组运维（treeWatch）</option></select><p class="field-hint" id="ruleTriggerHint">仅当群成员发送有效位置消息时触发，自动提取经纬度、位置名称和发送者信息。</p></div>
+          <div class="form-field full"><label for="ruleTrigger">消息类型</label><select class="input" id="ruleTrigger"><option value="location">位置消息（kind=location）</option><option value="treeWatch">输电班组运维（treeWatch）</option><option value="crossWatch">输电班组运维 / 交跨排查</option></select><p class="field-hint" id="ruleTriggerHint">仅当群成员发送有效位置消息时触发，自动提取经纬度、位置名称和发送者信息。</p></div>
         </div>
       </section>
       <section class="form-section">
@@ -227,7 +227,7 @@
         <div class="group-list" id="groupList"></div>
       </section>
       <section class="form-section" id="treeWatchFields" hidden>
-        <div class="section-head"><h3>树木排查</h3><span>汇总、归属班组与更正提取</span></div>
+        <div class="section-head"><h3>输电班组运维</h3><span>汇总、归属班组与更正提取</span></div>
         <div class="form-grid">
           <div class="form-field"><label for="ruleSummaryKeywords">汇总关键词</label><input class="input" id="ruleSummaryKeywords" placeholder="汇总" autocomplete="off"><p class="field-hint">逗号分隔；@监听账号且内容含任一关键词即把当天记录的汇总 xlsx 发到群，可重复汇总。</p></div>
           <div class="form-field"><label for="ruleTeamName">归属班组（壹匣）</label><input class="input" id="ruleTeamName" maxlength="32" placeholder="如：检修一班" autocomplete="off"><p class="field-hint">记录实时推送与「报送」重推时作为 team_name 上报；留空则该规则记录无法推送。</p></div>
@@ -275,7 +275,7 @@
     <div class="modal-body">
       <div class="table-wrap">
         <table class="rules-table">
-          <thead><tr><th>时间</th><th>发现人</th><th>报送原文</th><th>线路名称</th><th>区段</th><th>树种</th><th>数量</th><th>水平</th><th>垂直</th><th>状态</th><th>推送</th><th>辅证</th><th>更正</th></tr></thead>
+          <thead><tr id="recordTableHead"><th>时间</th><th>发现人</th><th>报送原文</th><th>线路名称</th><th>区段</th><th>树种</th><th>数量</th><th>水平</th><th>垂直</th><th>状态</th><th>推送</th><th>辅证</th><th>更正</th></tr></thead>
           <tbody id="recordTableBody"></tbody>
         </table>
       </div>

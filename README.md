@@ -6,6 +6,7 @@
 
 - **位置消息触发**：群成员发送位置消息时，提取经纬度与发送者信息调用 Dify 工作流。
 - **输电班组运维（treeWatch，内部键保留）**：树木排查 + 群内提问。树木排查为全天候监听捕获，命中的报送消息逐条调用 Dify 提取工作流解析为结构化记录后**实时推送壹匣**（含更正重推、撤回删除推送），引用已捕获记录的消息调用更正工作流打补丁；「@监听账号 + 汇总」随时把当天（北京时间自然天）汇总 xlsx 发群，管理端可导出/补发/手动重推。群内提问为「@监听账号 + 文字/引用文字/图片/文件/视频/语音」，以该成员 wxid 对应的壹匣账号身份调壹匣 Call Me 提问，回答写成 md 文件发回群（见《群内提问》）。
+- **输电班组运维 / 交跨排查（crossWatch，内部键保留）**：交叉跨越排查。全天候监听捕获群内交跨报送 → Dify 提取（WF1c）→ **实时推送壹匣「交跨记录」应用**（`/api/v1/crossing/ingest`，含更正重推、撤回删除推送）；引用已捕获记录的消息调用交跨更正工作流（WF2c）打补丁；「@监听账号 + 汇总 / 报送」指令同树障口径。无群内提问、无辅证照片（见《交跨排查（crossWatch）规则》）。
 
 ## 快速开始
 
@@ -36,7 +37,7 @@ Docker 部署见 `Dockerfile` 与 `docker/docker-compose.yml`，数据持久化�
 | `WECHATPADPRO_TOKEN` | Cloud Access Token | 管理页配置 |
 | `WECHATPADPRO_BOT_WXID` | 监听账号自身 wxid（输电班组运维必填） | 管理页配置 |
 | `LOG_RAW_MESSAGE` | 为 `1` 时打印原始推送报文 | 关 |
-| `YIXIA_BASE_URL` / `YIXIA_INGEST_TOKEN` | 壹匣后端地址 / 推送令牌（树障推送与群内提问必填，任一缺失均不可用；与壹匣同 Docker 网络时按容器名填，如 `http://j1toolkit`） | 空 |
+| `YIXIA_BASE_URL` / `YIXIA_INGEST_TOKEN` | 壹匣后端地址 / 推送令牌（树障推送、交跨推送与群内提问必填，任一缺失均不可用；与壹匣同 Docker 网络时按容器名填，如 `http://j1toolkit`） | 空 |
 
 ## 输电班组运维（treeWatch）规则
 
@@ -192,15 +193,68 @@ Docker 部署见 `Dockerfile` 与 `docker/docker-compose.yml`，数据持久化�
 
 ### 线路表
 
-管理页「线路表」维护（上传 xlsx 整体更新或在线增删改）。报送原文的线路名由项目侧归一化匹配（不归 Dify）：去 `110kV` 前缀、`吕汾1线→吕汾Ⅰ线` 罗马数字归一、补「线」字；多候选（如 `孝南` 可同时指 `孝南线`/`孝南T接线`）或无匹配时记录标「待确认」，在当日记录明细中下拉指定。
+管理页「线路表」维护（上传 xlsx 整体更新或在线增删改）。报送原文的线路名由项目侧归一化匹配（不归 Dify）：去 `110kV` 前缀、`吕汾1线→吕汾Ⅰ线` 罗马数字归一、补「线」字；多候选（如 `孝南` 可同时指 `孝南线`/`孝南T接线`）或无匹配时记录标「待确认」，在当日记录明细中下拉指定。树障与交跨记录共用同一张线路表。
+
+## 交跨排查（crossWatch）规则
+
+> 内部键 `crossWatch` 保留，管理页展示名为「输电班组运维 / 交跨排查」。与 treeWatch 同群并存时各走各的日桶：交跨桶 ID = `<群ID>_<yyyy-MM-dd>_crossing`、桶对象 `kind='crossing'`；树障桶保持旧 ID（旧数据零迁移），旧桶无 `kind` 字段视同树障。能力 = 树木排查全量对齐 − 群内提问 − 辅证照片 − 处理状态。每群同样配提取（WF1c）+ 更正提取（WF2c）两个 Dify API Key，规则级配汇总关键词与归属班组（同 treeWatch 口径）。
+
+### 捕获漏斗与指令
+
+- **全天候捕获与日桶**：同树障口径，记录按北京时间自然天归入交跨日桶（每群每天一个），监听账号自身消息不参与捕获。
+- **本地正则初筛**：命中 `交叉|跨越|交跨` 特征词且含杆号（`43-44`、`25#-26#`、`29号` 等区间或单杆）；纯树障消息（含 `棵`）不会误入，终审由 Dify `is_crossing` 完成（输出 `false` 丢弃）。
+- **Dify 提取与线路补全**：落 pending → WF1c 提取 → `is_crossing` 判定 → 省略线路名称时按该成员**最近一次交跨记录**的线路自动补全（与树障各自独立，不互相补）+ 线路表归一 → 引用回执「已记录」（线路补全注明变体同树障）→ 实时推送壹匣；提取失败回「记录失败」，推送失败回「报送失败，请私聊报送班管及超管」。
+- **指令清单**（均需 `@监听账号`，按优先级）：
+  1. 「报送」（全等）→ 当天全部交跨记录以 direct 模式整体重推壹匣，回执「今日 N 条记录已重新报送壹匣」；
+  2. 汇总关键词（默认「汇总」）→ 等待进行中提取完成后把当天交跨汇总 xlsx 发群，回执「今日汇总表已发送」/「今日暂无记录」；
+  3. 其余 @ 消息**静默忽略（交跨排查无群内提问）**。
+- **图片与媒体消息**：图片消息直接忽略（交跨为纯文字台账，无辅证机制、不缓存 CDN 参数——同群 treeWatch 规则仍自行处理图片）；「引用图片发文字」忽略并记日志；文件/视频/语音媒体消息不缓存（无群内提问可引用）。
+- **引用更正**：引用一条已捕获交跨记录发送文字 → 复用更正流程调该群 `correctApiKey`（WF2c），`correct` 按 `patches` 原地更正（快照留存 `correctionHistory`）并回执「已更正」+ 实时重推，`none` 忽略；WF2c 不返回 `status`（交跨无处理状态）。仅处理交跨日桶内的记录。
+- **撤回删除**：同树障启发式口径（撤回人 + 3 分钟时间窗 + 撤回人两者皆无时兜底时间窗内最近一条），但只在该群 `kind='crossing'` 的日桶内定位（撤回暂存也按桶类型分键，树障/交跨互不补判）；整条删除先推 `deletes` 至 crossing ingest 再删本地，失败事件入删除重试队列（事件快照 `kind`）由失败重扫按同节奏补推。
+- **群内反馈**：同树障口径——「已记录」「已更正」「已删除」等均由 crane-answer 自行发送，壹匣 ingest 结果仅走壹匣站内通知；更正/删除失败静默待重扫。
+
+### 汇总导出与群内发送
+
+群内发送、本地下载、管理端补发机制与树障完全一致（`sendSessionXlsx` 按桶 kind 自动选择交跨 workbook）。列序固定（14 列）：序号 / 电压等级 / 线路名称 / 跨越区段 / 跨越类型 / 交叉点距小号侧距离（m）/ 交叉点距大号侧距离（m）/ 交叉物距边线水平距离（m）/ 交叉垂直距离（m）/ 交叉角（°）/ 是否存在隐患 / 发现人 / 巡视时间 / 备注。
+
+约定同树障：全部单元格文本格式（numFmt `@`）；「序号」按排序生成、不持久化；排序按线路表顺序分组、组内按起始杆号升序，未匹配记录排最后并标「（待确认）」；区段格式 `43#-44#`，单杆 `43#`；巡视时间取报送消息日期，格式 `2026.10.18`；发现人优先取「发送者别名」。文件名前缀「交叉跨越排查记录」。
+
+### 报送壹匣
+
+实时推送 / 失败静默重扫（60 秒扫描、≥5 分钟重试间隔）/ 「报送」整体重推 / 管理端桶级与单条重推，机制与树障完全一致，仅 ingest 地址与记录字段集不同：
+
+**接口契约**：`POST {YIXIA_BASE_URL}/api/v1/crossing/ingest`，请求头同树障（`Content-Type: application/json`、`X-Ingest-Token: {YIXIA_INGEST_TOKEN}`）。body 外层字段口径与树障一致（`session_id`（交跨日桶 ID）/ `group_id` / `group_name` / `team_name` / `mode` / `review_note`（恒空串）/ `pusher` / `xlsx_base64`（仅整体重推随传）/ `records` / `deletes`）；删除推送 body 仅含 `session_id` / `team_name` / `group_name` / `mode` / `deletes`，壹匣按 `(team_id, crane_record_id)` 定位删除并写墓碑，找不到计 skipped。
+
+**响应**：`ok` / `inserted` / `updated` / `skipped` / `deleted`（交跨无辅证照片，故无 `photos_failed` 计数）。
+
+`records[i]`（实时推送通常单条，纯文字无照片字段）：
+
+| 字段 | 说明 |
+|---|---|
+| `crane_record_id` | 记录 ID（壹匣侧按 `(team_id, crane_record_id)` 幂等 upsert） |
+| `msg_id` | 报送消息 svr_id |
+| `voltage_level` | 电压等级（线路表匹配值，未匹配为空） |
+| `line_name` | 归一化线路名（未匹配为空） |
+| `line_name_raw` | 报送原文线路名 |
+| `section` | 跨越区段（同导出区段格式 `43#-44#`） |
+| `pole_from` / `pole_to` | 杆号（数字或 null） |
+| `crossing_type` | 跨越物原文（如 `10kV5106三皇2回线主干17-18` / `35kV` / `通讯线`），未提空串 |
+| `dist_small` / `dist_big` | 交叉点距小号/大号侧距离（m，side 判定同 WF1c） |
+| `cross_horizontal` | 交叉物距边线水平距离（m，一般空） |
+| `cross_vertical` | 交叉垂直距离（m，「垂距/垂直/距离」入此列） |
+| `cross_angle` | 交叉角（°） |
+| `has_hazard` | 是否存在隐患（原文，一般空） |
+| `finder_name` | 发现人（别名优先） |
+| `inspect_at` | 巡视时间（`yyyy-MM-dd`，由报送消息日期生成） |
+| `remark` | 备注（无法归入上述字段的补充说明，如「下方跨越」） |
 
 ## Dify 工作流契约
 
-树木排查需要两个 Dify Workflow 应用，每个监听群各配两个 API Key（提取 / 更正提取）。
+树木排查（treeWatch）与交跨排查（crossWatch）各需要两个 Dify Workflow 应用，每个监听群各配两个 API Key（提取 / 更正提取）：treeWatch 用 WF1 + WF2，crossWatch 用 WF1c + WF2c。
 
 ### WF1 · 报送提取
 
-> **模型不支持结构化输出时**（如 MiMo）：LLM 节点输出文本后接一个「代码执行」节点做 JSON 提取，脚本见 `design/dify-json-extract.py`（WF1/WF2 各一段粘贴即用代码）。接线：LLM 输出 → 代码节点输入 `text`（String）；代码节点把各字段作为**独立输出变量**逐个声明（WF1 全部 String；WF2 的 `patches` 为 Object），结束节点同名输出。本项目端直接读取 `outputs` 下各字段（`result` 汇总形态也兼容）。脚本已兼容 markdown 围栏、首尾废话、尾随逗号、数字带单位（"50米"/"10棵"）等情况。
+> **模型不支持结构化输出时**（如 MiMo）：LLM 节点输出文本后接一个「代码执行」节点做 JSON 提取，脚本见 `design/dify-json-extract.py`（WF1/WF2/WF1c 各一段粘贴即用代码，WF2c 复用 WF2 段）。接线：LLM 输出 → 代码节点输入 `text`（String）；代码节点把各字段作为**独立输出变量**逐个声明（WF1 全部 String；WF2 的 `patches` 为 Object），结束节点同名输出。本项目端直接读取 `outputs` 下各字段（`result` 汇总形态也兼容）。脚本已兼容 markdown 围栏、首尾废话、尾随逗号、数字带单位（"50米"/"10棵"）等情况。
 
 **输入变量**（均为 String）：`text`（报送原文）、`nickname`（发送者显示名）、`wxid`、`group`（群备注）。
 
@@ -303,6 +357,99 @@ Docker 部署见 `Dockerfile` 与 `docker/docker-compose.yml`，数据持久化�
 - 拿不准时输出 none，禁止编造 patches
 ```
 
+### WF1c · 交跨报送提取
+
+> 模型不支持结构化输出时的「代码执行」节点脚本见 `design/dify-json-extract.py`（WF1c 段，WF2c 复用 WF2 段），接线与输出声明口径同 WF1/WF2。
+
+**输入变量**（均为 String）：`text`（报送原文）、`nickname`、`wxid`、`group`。
+
+**输出**：结束节点输出变量 `result`，为 JSON 字符串（或直接以各字段为输出变量），字段如下：
+
+| 字段 | 类型 | 说明 |
+|---|---|---|
+| `is_crossing` | Boolean | 是否交叉跨越类报送（树木树障、闲聊、天气等填 false） |
+| `line_name` | String | 线路名称原文，原样提取不加工（如 `孝南线`/`孝南`/`110kV孝南线`/`昌城`） |
+| `pole_from` / `pole_to` | Number | 跨越区段杆号；单杆两值相同 |
+| `crossing_type` | String | 跨越物原文（厂区/10kV线路/通讯线/公路/铁路等），未提空串 |
+| `side` | String | `small`（交叉点距小号侧）/ `big`（距大号侧）/ `""`（未提） |
+| `distance` | Number/String | 上述距离（米），未提则空 |
+| `cross_horizontal` | Number/String | 交叉物距边线水平距离（米），一般空 |
+| `cross_vertical` | Number/String | 交叉垂直距离（米），「距离/垂距」入此列 |
+| `cross_angle` | Number/String | 交叉角（度） |
+| `has_hazard` | String | 是否存在隐患原文，未提空串（一般空） |
+| `remark` | String | 备注，无则空串 |
+
+**提示词（LLM 节点系统提示）**：
+
+```text
+你是输电线路交叉跨越排查信息提取员。从微信群的交跨排查报送消息中提取字段，只输出 JSON，不要输出任何多余文字。
+
+字段定义：
+- is_crossing: 布尔，是否交叉跨越类报送（树木树障、闲聊、天气预报等填 false）
+- line_name: 线路名称原文，原样提取不加工（如"孝南线""昌城""110kV孝南线"）
+- pole_from / pole_to: 跨越区段杆号区间数字。"25#-26#"→25和26；"43-44"→43和44；只提单杆时两值相同
+- crossing_type: 跨越物（被交叉对象）原文描述，如"10kV5106三皇2回线主干17-18""35kV""380V""厂区""通讯线""公路""铁路""河流""房屋"，未提则空串
+- side: "small"(交叉点距小号侧/距小号杆) | "big"(距大号侧/距大号杆) | ""(未提)
+  判断规则："距大号侧60m"→big；"距25#xx"且区间为25-26→small
+- distance: 上述交叉点距小号/大号侧距离数值（米），未提则空
+- cross_horizontal: 交叉物距边线水平距离（米），"边线水平x"后数值，未提则空（一般不提）
+- cross_vertical: 交叉垂直距离（米），"垂距x"/"垂直x"/"距离x"后数值
+- cross_angle: 交叉角（度），"角度90"/"交叉角度90度"/"交叉角90"→90
+- has_hazard: 是否存在隐患，原文摘录（如"是"/"否"），未提则空串（一般不提）
+- remark: 备注（无法归入上述字段的补充说明，如"下方跨越"），无则空串
+
+数值只填数字不带单位。拿不准的字段留空，禁止编造。
+
+示例：
+输入：孝南线43-44，下方跨越10kV5106三皇2回线主干17-18，距大号侧60m，交叉角度90度，垂距11m
+输出：{"is_crossing":true,"line_name":"孝南线","pole_from":43,"pole_to":44,"crossing_type":"10kV5106三皇2回线主干17-18","side":"big","distance":60,"cross_horizontal":"","cross_vertical":11,"cross_angle":90,"has_hazard":"","remark":"下方跨越"}
+
+输入：昌城线25#-26#，跨越35kV，交叉角度90度，距离6
+输出：{"is_crossing":true,"line_name":"昌城线","pole_from":25,"pole_to":26,"crossing_type":"35kV","side":"","distance":"","cross_horizontal":"","cross_vertical":6,"cross_angle":90,"has_hazard":"","remark":""}
+
+输入：昌城21#-22#，跨越380V，角度90，距离6.4
+输出：{"is_crossing":true,"line_name":"昌城","pole_from":21,"pole_to":22,"crossing_type":"380V","side":"","distance":"","cross_horizontal":"","cross_vertical":6.4,"cross_angle":90,"has_hazard":"","remark":""}
+
+输入：孝南线15#-16#，跨越通讯线，交叉点距小号侧30米，垂距8，角度75，通讯杆老化
+输出：{"is_crossing":true,"line_name":"孝南线","pole_from":15,"pole_to":16,"crossing_type":"通讯线","side":"small","distance":30,"cross_horizontal":"","cross_vertical":8,"cross_angle":75,"has_hazard":"","remark":"通讯杆老化"}
+
+输入：110kV孝南线24#-25#，核桃树1棵，水平0，垂距1米
+输出：{"is_crossing":false}
+```
+
+### WF2c · 交跨更正提取
+
+**输入变量**（均为 String）：`correction_text`（引用者新发的内容）、`quoted_text`（被引用消息原文）、`current_record`（该记录当前已解析字段的 JSON 字符串）、`nickname`、`wxid`。
+
+**输出**：`result`，JSON 字符串：
+
+| 字段 | 说明 |
+|---|---|
+| `action` | `correct`（更正字段）/ `none`（无关闲聊）；交跨无处理状态，不返回 `status` |
+| `patches` | action=correct 时的字段补丁对象，键名与 WF1c 一致，如 `{"cross_vertical": 12.5}` |
+| `reason` | 一句话判断依据 |
+
+**提示词**：
+
+```text
+你是输电线路交叉跨越排查记录的更正判定员。群内成员引用了一条已捕获的交跨记录并发送了新内容，请判断其意图，只输出 JSON。
+
+输入包含：correction_text（新内容）、quoted_text（被引用的报送原文）、current_record（该记录当前已解析字段的 JSON）。
+
+输出字段：
+- action: "correct"(更正字段) | "none"(无关内容)
+- patches: action 为 correct 时给出要修改的字段及新值，键名与 current_record 一致（如 {"cross_vertical": 12.5}、{"cross_angle": 60}）；只输出需要变更的字段
+- reason: 一句话说明判断依据
+
+规则：
+- "更正，垂距12.5"→ {"action":"correct","patches":{"cross_vertical":12.5}}
+- "角度是60度"→ {"action":"correct","patches":{"cross_angle":60}}
+- "跨越的是10kV三皇线"→ {"action":"correct","patches":{"crossing_type":"10kV三皇线"}}
+- 补充说明类若语义是修正原记录字段 → correct 并给出 patches；若与记录无关 → none
+- 纯表情、收到、闲聊 → none
+- 拿不准时输出 none，禁止编造 patches
+```
+
 ### WF3 · 回答文件命名（群内提问）
 
 群内提问回答落成 md 文件前调用，为回答文件生成标题。每个规则在「群内提问」区块单独配置本工作流的 API Key。
@@ -349,7 +496,7 @@ src/
     push.js                记录/删除实时推送与整体重推壹匣（xlsx base64 附档、超时重试）；postIngestWithRetry 兼供群内提问调 ingest-chat
   wechatpadpro/
     client.js              WebSocket 通道（换票、重连、心跳）
-    messageHandler.js      消息分发：位置触发 + 输电班组运维（treeWatch）全天候捕获（辅证照片双向引用挂接、撤回分流、群内提问分流、媒体参数缓存）
+    messageHandler.js      消息分发：位置触发 + 输电班组运维两类全天候捕获（treeWatch 树木排查：辅证照片双向引用挂接、撤回分流、群内提问分流、媒体参数缓存；crossWatch 交跨排查：纯文字捕获、引用更正、撤回分流）
     memberResolver.js      发送者显示名解析（别名 > 群成员接口 > wxid）
     imageStore.js          群图片 CDN 参数缓存与下载（data/image-cache.json + data/attachments/）
     fileStore.js           文件/视频/语音下载参数缓存与下载、silk→WAV 转码（data/media-cache.json，字段形态待真机首验）

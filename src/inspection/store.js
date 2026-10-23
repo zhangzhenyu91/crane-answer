@@ -125,17 +125,27 @@ function getState() {
 }
 
 /**
+ * 桶类型：'tree'（树障，默认）| 'crossing'（交跨排查）。旧桶无 kind 字段视同 tree。
+ */
+function bucketKind(bucket) {
+  return bucket && bucket.kind === 'crossing' ? 'crossing' : 'tree';
+}
+
+/**
  * 取该群今天（北京时间自然天）的日桶，无则自动创建。全天候捕获下每条消息都经此取桶，status 恒为 active。
+ * 同群可并存树障/交跨两类日桶：交跨桶 ID 加 '_crossing' 后缀（treeWatch 保持旧 ID，旧数据零迁移）。
  * @param {string} groupId 群 ID
- * @param {{ ruleId?: string, ruleName?: string, groupName?: string, teamName?: string }} [meta] 建桶元信息
+ * @param {{ ruleId?: string, ruleName?: string, groupName?: string, teamName?: string, kind?: 'tree'|'crossing' }} [meta] 建桶元信息
  */
 function getTodayBucket(groupId, meta = {}) {
   const now = Math.floor(Date.now() / 1000);
-  const bucketId = `${groupId}_${beijingDateString(now)}`;
+  const kind = meta.kind === 'crossing' ? 'crossing' : 'tree';
+  const bucketId = `${groupId}_${beijingDateString(now)}${kind === 'crossing' ? '_crossing' : ''}`;
   const existing = getState().buckets.find((item) => item.id === bucketId);
   if (existing) return existing;
   const bucket = {
     id: bucketId,
+    kind,
     ruleId: meta.ruleId || '',
     ruleName: meta.ruleName || '',
     groupId,
@@ -155,9 +165,10 @@ function getTodayBucket(groupId, meta = {}) {
   return bucket;
 }
 
-/** 该群今天日桶内的全部有效（status=active）记录 */
-function listTodayRecords(groupId) {
-  const bucketId = `${groupId}_${beijingDateString(Math.floor(Date.now() / 1000))}`;
+/** 该群今天指定类型（kind，缺省 tree）日桶内的全部有效（status=active）记录 */
+function listTodayRecords(groupId, kind = 'tree') {
+  const crossing = kind === 'crossing';
+  const bucketId = `${groupId}_${beijingDateString(Math.floor(Date.now() / 1000))}${crossing ? '_crossing' : ''}`;
   const bucket = getState().buckets.find((item) => item.id === bucketId);
   if (!bucket) return [];
   return bucket.records.filter((item) => item.status === 'active');
@@ -303,6 +314,7 @@ function listSessions(filter = {}) {
     .sort((a, b) => b.startedAt - a.startedAt);
   return list.map((item) => ({
     id: item.id,
+    kind: bucketKind(item),
     ruleId: item.ruleId,
     ruleName: item.ruleName,
     groupId: item.groupId,
@@ -362,6 +374,7 @@ function enqueuePendingDelete(session, record) {
   const event = {
     id: id('del'),
     bucketId: session.id,
+    kind: bucketKind(session), // 删除事件快照桶类型，补推时据此选择 treehazard / crossing ingest 地址
     ruleId: session.ruleId || '',
     groupId: session.groupId || '',
     groupName: session.groupName || '',
@@ -440,12 +453,14 @@ function listUnpushedRecords() {
  * 取该成员最近一次有效记录的线路名称（省略线路报送时自动补全用）：
  * 优先归一化匹配后的线路名（matchedLine.name），为空回退原始线路名（lineNameRaw）；
  * 仅统计 status=active 且未标 deleting 的记录，按 capturedAt 取最近一条。
+ * kind 过滤：树障/交跨各自的线路补全只取同类桶记录（旧桶无 kind 视同 tree）。
  * @returns {string|null} 线路名或 null
  */
-function findRecentLineBySender(senderId) {
+function findRecentLineBySender(senderId, kind = 'tree') {
   if (!senderId) return null;
   let best = null;
   for (const bucket of getState().buckets) {
+    if (bucketKind(bucket) !== kind) continue;
     for (const record of bucket.records) {
       if (record.status !== 'active' || record.deleting) continue;
       if (record.senderId !== senderId) continue;
@@ -459,14 +474,15 @@ function findRecentLineBySender(senderId) {
 
 /**
  * 撤回消息定位记录：推送的撤回事件不含被撤消息 ID，只能启发式匹配——
- * 在该群所有日桶中取最近 N 分钟内的记录（覆盖跨午夜边界）：
+ * 在该群所有同类型（kind，缺省 tree）日桶中取最近 N 分钟内的记录（覆盖跨午夜边界）：
  * 优先撤回人时间窗内最近的一条记录；群主撤回他人消息等场景兜底为该群时间窗内最近一条。
  */
-function findRecallTarget(groupId, senderId, windowSec = 180) {
+function findRecallTarget(groupId, senderId, windowSec = 180, kind = 'tree') {
   const now = Math.floor(Date.now() / 1000);
   const candidates = [];
   for (const bucket of getState().buckets) {
     if (bucket.groupId !== groupId) continue;
+    if (bucketKind(bucket) !== kind) continue;
     for (const record of bucket.records) {
       if (now - record.capturedAt <= windowSec) candidates.push({ session: bucket, record });
     }
@@ -493,6 +509,7 @@ function assignRecordLine(recordId, matchedLine) {
 
 module.exports = {
   initStore,
+  bucketKind,
   getTodayBucket,
   listTodayRecords,
   addRecord,

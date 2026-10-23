@@ -72,9 +72,20 @@ function buildEvidencePhotos(record) {
 }
 
 /**
- * 装配单条推送记录；区段/侧别距离/垂直距离/发现人的展示文本与 export.js 汇总列保持一致。
+ * 桶/删除事件 → 推送 ingest 地址：交跨（kind='crossing'）走 /api/v1/crossing/ingest，
+ * 其余（含旧无 kind 数据）走树障 /api/v1/treehazard/ingest。
  */
-function buildRecordPayload(record) {
+function resolveIngestUrl(source) {
+  const path = store.bucketKind(source) === 'crossing' ? '/api/v1/crossing/ingest' : '/api/v1/treehazard/ingest';
+  return `${config.yixia.baseUrl}${path}`;
+}
+
+/**
+ * 装配单条推送记录（按桶类型 kind 分派，缺省 tree）；
+ * 区段/侧别距离/垂直距离/发现人的展示文本与 export.js 汇总列保持一致。
+ */
+function buildRecordPayload(record, kind = 'tree') {
+  if (kind === 'crossing') return buildCrossingRecordPayload(record);
   const ex = record.extracted || {};
   return {
     crane_record_id: record.id,
@@ -96,6 +107,34 @@ function buildRecordPayload(record) {
     finder_name: resolveFinderNames(record),
     found_at: formatFoundAt(record.capturedAt),
     evidence_photos: buildEvidencePhotos(record),
+  };
+}
+
+/**
+ * 交跨记录推送载荷：字段对齐壹匣 /api/v1/crossing/ingest 契约（纯文字台账，无辅证照片）。
+ * inspect_at 由 capturedAt 生成（yyyy-MM-dd）；section/dist_small/dist_big/finder_name 复用导出同款格式化。
+ */
+function buildCrossingRecordPayload(record) {
+  const ex = record.extracted || {};
+  return {
+    crane_record_id: record.id,
+    msg_id: record.msgId || '',
+    voltage_level: (record.matchedLine && record.matchedLine.voltage) || '',
+    line_name: (record.matchedLine && record.matchedLine.name) || '',
+    line_name_raw: record.lineNameRaw || '',
+    section: formatSection(record),
+    pole_from: Number(ex.pole_from) || null,
+    pole_to: Number(ex.pole_to) || null,
+    crossing_type: text(ex.crossing_type),
+    dist_small: formatSideDistance(record, 'small'),
+    dist_big: formatSideDistance(record, 'big'),
+    cross_horizontal: text(ex.cross_horizontal),
+    cross_vertical: text(ex.cross_vertical),
+    cross_angle: text(ex.cross_angle),
+    has_hazard: text(ex.has_hazard),
+    finder_name: resolveFinderNames(record),
+    inspect_at: formatFoundAt(record.capturedAt),
+    remark: text(ex.remark),
   };
 }
 
@@ -188,9 +227,9 @@ async function pushRecord(bucket, record) {
       team_name: teamName,
       mode: 'direct',
       pusher: { wxid: '', name: '' },
-      records: [buildRecordPayload(record)],
+      records: [buildRecordPayload(record, store.bucketKind(bucket))],
     };
-    const url = `${config.yixia.baseUrl}/api/v1/treehazard/ingest`;
+    const url = resolveIngestUrl(bucket);
     try {
       const data = await postIngestWithRetry(url, body);
       return settle(true, 'ok', data);
@@ -206,11 +245,11 @@ async function pushRecord(bucket, record) {
  * 删除事件统一出口：前置校验 + 调用 ingest deletes 契约 + 超时重试封装。
  * 不抛错，失败返回原因由调用方决定入重试队列或记日志。
  */
-async function sendDeletePayload(body) {
+async function sendDeletePayload(body, source) {
   if (!config.yixia.baseUrl || !config.yixia.token) return { ok: false, message: '未配置壹匣推送', data: null };
   if (!body.team_name) return { ok: false, message: '该规则未配置归属班组', data: null };
   try {
-    const data = await postIngestWithRetry(`${config.yixia.baseUrl}/api/v1/treehazard/ingest`, body);
+    const data = await postIngestWithRetry(resolveIngestUrl(source), body);
     return { ok: true, message: 'ok', data };
   } catch (err) {
     return { ok: false, message: err.message, data: null };
@@ -231,7 +270,7 @@ async function pushDelete(bucket, record) {
     group_name: bucket.groupName || '',
     mode: 'direct',
     deletes: [{ crane_record_id: record.id, msg_id: record.msgId || '' }],
-  });
+  }, bucket);
 }
 
 /**
@@ -246,7 +285,7 @@ async function pushDeleteEvent(event) {
     group_name: event.groupName || '',
     mode: 'direct',
     deletes: [{ crane_record_id: event.craneRecordId, msg_id: event.msgId || '' }],
-  });
+  }, event);
 }
 
 /**
@@ -269,7 +308,8 @@ async function pushSession(session, mode, pusher = {}, reviewNote = '') {
   if (!teamName) throw createError('该规则未配置归属班组');
   const active = session.records.filter((item) => item.status === 'active' && !item.deleting);
   if (!active.length) throw createError('日桶无有效记录');
-  const records = active.map(buildRecordPayload);
+  const kind = store.bucketKind(session);
+  const records = active.map((record) => buildRecordPayload(record, kind));
 
   const workbook = await buildSessionWorkbook(session);
   const xlsxBase64 = Buffer.from(await workbook.xlsx.writeBuffer()).toString('base64');
@@ -284,7 +324,7 @@ async function pushSession(session, mode, pusher = {}, reviewNote = '') {
     xlsx_base64: xlsxBase64,
     records,
   };
-  const url = `${config.yixia.baseUrl}/api/v1/treehazard/ingest`;
+  const url = resolveIngestUrl(session);
 
   session.pushedAt = Math.floor(Date.now() / 1000);
   session.pushMode = mode;
