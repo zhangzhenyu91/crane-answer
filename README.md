@@ -37,7 +37,7 @@ Docker 部署见 `Dockerfile` 与 `docker/docker-compose.yml`，数据持久化�
 | `WECHATPADPRO_BOT_WXID` | 监听账号自身 wxid（输电班组运维必填） | 管理页配置 |
 | `LOG_RAW_MESSAGE` | 为 `1` 时打印原始推送报文 | 关 |
 | `YIXIA_BASE_URL` / `YIXIA_INGEST_TOKEN` | 壹匣后端地址 / 推送令牌（树障推送、交跨推送、聊天归档与群内提问必填，任一缺失均不可用；与壹匣同 Docker 网络时按容器名填，如 `http://j1toolkit`） | 空 |
-| `CHATLOG_DIGEST_TIME` | 聊天日志兜底归档的每日执行时点（北京时间 HH:mm，到点把未消费消息总结推 WeKnora 知识库） | `23:26` |
+| `CHATLOG_DIGEST_TIME` | 聊天日志兜底归档的每日执行时点（北京时间 HH:mm，到点把未被规则消费的消息总结推 WeKnora 知识库） | `23:26` |
 
 ## 输电班组运维（treeWatch）规则
 
@@ -200,20 +200,21 @@ Docker 部署见 `Dockerfile` 与 `docker/docker-compose.yml`，数据持久化�
 
 ### 聊天日志兜底归档（treeWatch 子能力）
 
-规则级可选配置「聊天日志总结工作流 API Key（WF4）」（管理页「聊天日志总结」区块，留空=不启用，留空提交保持已保存值）。启用后每天定时（北京时间 `CHATLOG_DIGEST_TIME`，默认 `23:26`，60 秒循环到点触发、当天只跑一次）把当天收集的未消费消息总结成当日纪要、连同未消费的文档类文件推送壹匣写入 WeKnora 知识库（知识库 ID 配在壹匣侧 env `WEKNORA_CHATLOG_KB_ID`，默认即检修一班历史聊天记录库）。
+规则级可选配置「聊天日志总结工作流 API Key（WF4）」（管理页「聊天日志总结」区块，留空=不启用，留空提交保持已保存值）。启用后每天定时（北京时间 `CHATLOG_DIGEST_TIME`，默认 `23:26`，60 秒循环到点触发、当天只跑一次）把当天收集的未消费消息总结成当日纪要、连同文档类文件推送壹匣写入 WeKnora 知识库（知识库 ID 配在壹匣侧 env `WEKNORA_CHATLOG_KB_ID`，默认即检修一班历史聊天记录库）。
 
-**收集口径**：在消息分发层做「消费标记」——只收集**绑定了启用 treeWatch 规则的群里、走完所有分流后无人认领**的消息：
+**收集口径**：只收集**未命中任何规则（含未来新增规则）且非监听账号自身发送**的消息——在消息分发层做「消费标记」，走完所有分流后无人认领才进兜底：
 
-- 文本消息（XML 形态内容跳过）记入 `{time, senderName, content}`；**文档类文件消息**（pdf/doc/docx/xlsx/xls/ppt/txt/csv/md/ofd/dwg/zip 等，含无扩展名文件）记入当天文档清单（fileStore 下载参数引用 + 文件名 + 发送者 + 时间）——**即使被 fileStore 缓存了下载参数（供群内提问引用）也照样进归档清单，参数缓存不算业务消费**；
-- 不进兜底（=被消费或不入网）：@监听账号的一切消息（指令/提问）、捕获/更正/撤回处理的消息、图片/视频/语音消息、监听账号自己发的（`direction=outgoing` 或 senderId=botWxid，天然排除 Call Me 回执 md）、系统消息/撤回事件、私聊、非绑定群；「交跨闸命中但未配交跨 Key 被忽略」的消息算**被消费**（命中了规则只是没配 Key，记日志不进兜底）；
+- 文本消息（XML 形态内容跳过；引用消息的可见文字取 app.title）记入 `{time, senderName, content}`；**文档类文件消息**（`kind=file`，不限扩展名）记入当天文档清单（fileStore 下载参数引用 + 文件名 + 发送者 + 时间）——**即使被 fileStore 缓存了下载参数（供群内提问引用）也算未消费，照样登记留痕**；扩展名不在 WeKnora 可入库白名单内者打 `unsupported` 标记：不进上传清单，仅在纪要尾部「未归档」组留痕（见下）；
+- 被消费（=不进兜底）：@监听账号的一切消息（指令/提问，未启用提问也静默算消费）、树障/交跨捕获、引用更正、撤回处理、图片/视频/语音等媒体备查；「交跨闸命中但未配交跨 Key 被忽略」也算消费（记日志不进兜底）；监听账号自身发送的一切内容（`direction=outgoing` 或 senderId=botWxid，天然排除「已记录/已更正」等回执与 Call Me 回答 md）、系统消息与撤回事件、私聊、非绑定群同样不进兜底；
+- **扩展约定：新增规则 handler 需返回消费布尔**（由 `dispatchRules` 汇总取并集，同群多规则时同一条消息只收集一次；文档另按消息 svr_id 去重）——未消费消息才会进兜底归档，新增规则无需改动归档侧。
 - 同群多规则时同一条消息只收集一次（文档按消息 svr_id 去重）。
 
 **执行**：对每个「启用 treeWatch 规则且配了 digestApiKey」覆盖的群（多规则同群去重，取第一个有 Key 的规则的 Key）：
 
 1. 当天该群 messages 与 documents 全空 → 跳过不写库；未配 digestApiKey 的群：当天数据保留、过期天丢弃；
 2. 调 WF4：`runWorkflow(digestApiKey, { date, group, messages })`，messages 拼「HH:mm 昵称：内容」逐行，**最多 400 条、总字符 ≤20000**，截断时末尾补一行「（其余 N 条从略）」；
-3. 组装 md：`# {群名} {date} 聊天纪要` + WF4 返回正文 + 末尾附「原始消息 N 条 / 归档文档 M 个：文件名清单」；
-4. **先推 digest（kind=digest），再逐个文档**：从 fileStore 取下载参数调 `DownloadFileBinary` 取二进制（>30MB 跳过记日志；参数缺失跳过该文档记日志，不阻断整批），base64 后逐个 `kind=file` 推送；
+3. 组装 md：`# {群名} {date} 聊天纪要` + WF4 返回正文 + 末尾附「原始消息 N 条 / 归档文档 M 个：文件名清单」；存在不支持入库的文档时追加第二组「未归档文档 K 个（类型不支持入库）：文件名清单」留痕；
+4. **先推 digest（kind=digest），再逐个文档**：仅白名单内扩展名可入库——`pdf doc docx ppt pptx xlsx xls epub mhtml csv md markdown txt json html`（与壹匣 callme 的 WeKnora 上传白名单一致；zip/rar/7z/dwg/ofd/音视频/图片/无扩展名不入库，仅留痕）。从 fileStore 取下载参数调 `DownloadFileBinary` 取二进制（>30MB 跳过记日志；参数缺失跳过该文档记日志，不阻断整批），base64 后逐个 `kind=file` 推送；某文档被壹匣以 `unsupported_file` 拒收时**不再重试该文件**（视为终态：移入「未归档」记录并落盘 `unsupported` 标记防反复重推），其余文件继续、整批不算失败；
 5. 全成功 → 清理该群当天数据；部分失败 → attempts+1 保留，**次日启动时补跑一次存量**，attempts ≥3 丢弃并 error 日志。
 
 **壹匣契约**：`POST {YIXIA_BASE_URL}/api/v1/chatlog/ingest`，头 `X-Ingest-Token: {YIXIA_INGEST_TOKEN}`，**一次调用只带一件**：

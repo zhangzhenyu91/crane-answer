@@ -239,20 +239,6 @@ function passesCrossingGate(text) {
   return POLE_RANGE_RE.test(text) || POLE_SINGLE_RE.test(text);
 }
 
-// 聊天归档的文档扩展名白名单（无扩展名文件按「可能含价值信息」口径从宽收录）
-const ARCHIVE_DOC_RE = /\.(pdf|docx?|xlsx?|pptx?|txt|csv|md|ofd|dwg|zip|rar|7z)$/i;
-
-/**
- * fileStore 媒体缓存条目是否为可归档文档：文件类消息且扩展名在白名单（或无扩展名）。
- * 视频/语音（kind=video/voice）与图片不进归档清单。
- */
-function isArchiveDocument(entry) {
-  if (!entry || entry.kind !== 'file') return false;
-  const name = String(entry.fileName || '').trim();
-  if (!name) return false;
-  return ARCHIVE_DOC_RE.test(name) || !/\.[a-zA-Z0-9]{1,8}$/.test(name);
-}
-
 function msgIdOf(msg) {
   return String(msg.svr_id || msg.new_msg_id || msg.id || msg.svrid || msg.srvid || msg.msg_id || '');
 }
@@ -900,6 +886,7 @@ async function handleYixiaPushCommand(conversationId, senderId, rule, group) {
 /**
  * 输电班组运维消息入口（treeWatch）：树障/交跨双漏斗 + 群内提问。
  * 返回是否消费该消息——消费（true）= 不进入聊天日志兜底归档；未消费（false）由调用方收集。
+ * 新增分支/规则时保持该约定：被本 handler 认领（含忽略类）一律返回 true。
  * @returns {Promise<boolean>}
  */
 async function handleTreeWatchMessage(msg, rule, group, conversationId, senderId, content) {
@@ -982,17 +969,24 @@ async function handleTreeWatchMessage(msg, rule, group, conversationId, senderId
   }
 
   // 文件/视频/语音等媒体消息：解析下载参数缓存备查（群内提问引用时用），不进捕获。
-  // 文档类文件（fileStore 参数缓存不算业务消费）照样记入聊天归档清单。
+  // 文档类文件（kind=file，不限扩展名）即使参数被缓存备查也算未消费——进聊天归档清单（白名单
+  // 分流/unsupported 标记在 chatlog 登记时完成），返回 false；视频/语音等媒体备查算消费。
   if (msg.kind && !['text', 'quote', 'app'].includes(String(msg.kind))) {
     const mediaEntry = fileStore.cacheMedia(msg, conversationId, senderId);
-    if (mediaEntry && isArchiveDocument(mediaEntry)) collectDocumentAsync(conversationId, group, mediaEntry, msg, senderId);
+    if (mediaEntry && mediaEntry.kind === 'file') {
+      collectDocumentAsync(conversationId, group, mediaEntry, msg, senderId);
+      return false;
+    }
     return true;
   }
   if (!content || content.trim().startsWith('<')) {
     // app 形态的文件/视频/语音消息内容为 XML：仍尝试解析缓存下载参数备查（群内提问引用时用）
     if (content && content.trim().startsWith('<')) {
       const mediaEntry = fileStore.cacheMedia(msg, conversationId, senderId);
-      if (mediaEntry && isArchiveDocument(mediaEntry)) collectDocumentAsync(conversationId, group, mediaEntry, msg, senderId);
+      if (mediaEntry && mediaEntry.kind === 'file') {
+        collectDocumentAsync(conversationId, group, mediaEntry, msg, senderId);
+        return false;
+      }
     }
     return true;
   }
@@ -1037,6 +1031,7 @@ function boundTreeWatchGroup(rules, conversationId) {
 /**
  * 规则分发：返回该消息是否被任一规则消费（消费 = 不进入聊天日志兜底归档）。
  * 同一消息在多个规则间的消费状态取并集；处理异常视为已消费，避免异常消息进归档。
+ * 新增规则的 handler 需返回消费布尔（未消费消息才会进兜底归档），在此汇总。
  */
 async function dispatchRules(msg, conversationId, senderId, content) {
   const { rules } = getSettings();
@@ -1091,10 +1086,15 @@ function handleMessage(msg) {
   const treeGroup = boundTreeWatchGroup(getSettings().rules, conversationId);
   dispatchRules(msg, conversationId, senderId, content)
     .then(async (consumed) => {
-      // 兜底归档：绑定了启用 treeWatch 规则的群里，走完所有分流仍无人认领的消息
+      // 兜底归档：绑定启用 treeWatch 规则的群里，未被任何规则消费且非监听账号自身的消息
       if (consumed || !treeGroup) return;
+      // 引用消息的可见文字在 app.title（content 为空时兜底）；XML 形态内容跳过
+      const text = (typeof content === 'string' && content.trim())
+        ? content.trim()
+        : String((msg.app && msg.app.title) || '').trim();
+      if (!text || text.startsWith('<')) return;
       const senderName = await resolveDisplayName(conversationId, senderId);
-      chatlog.collectMessage({ conversationId, groupName: treeGroup.name, msg, senderId, senderName, content });
+      chatlog.collectMessage({ conversationId, groupName: treeGroup.name, msg, senderId, senderName, content: text });
     })
     .catch((err) => console.error(`[聊天归档] 兜底收集异常：${err.stack || err}`));
 }

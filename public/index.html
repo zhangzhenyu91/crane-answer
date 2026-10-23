@@ -237,7 +237,7 @@
         <div class="form-field full" style="margin-top:14px">
           <label for="ruleDigestKey">聊天日志总结工作流 API Key（WF4，可空）</label>
           <input class="input" id="ruleDigestKey" type="password" placeholder="请输入 app-xxxxxxxx" autocomplete="new-password">
-          <p class="field-hint">留空不启用；启用后每天定时（北京时间 <code>CHATLOG_DIGEST_TIME</code>，默认 23:26）把未被规则消费的消息总结为当日纪要、连同未消费的文档类文件推送壹匣写入 WeKnora 知识库。</p>
+          <p class="field-hint">留空不启用；启用后每天定时（北京时间 <code>CHATLOG_DIGEST_TIME</code>，默认 23:26）把群内未被规则消费的消息（监听账号自身、报送/更正/指令等命中规则的内容除外）总结为当日纪要、连同文档类文件推送壹匣写入 WeKnora 知识库。</p>
         </div>
       </section>
       <section class="form-section" id="askFields" hidden>

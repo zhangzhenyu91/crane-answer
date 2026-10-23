@@ -1,11 +1,15 @@
 /**
- * 聊天日志兜底归档（treeWatch 规则内子能力）：收集绑定群内**未被任何规则消费**的消息，
- * 每天定时由 WF4（Dify）总结成当日纪要，连同未消费的文档类文件推送壹匣
+ * 聊天日志兜底归档（treeWatch 规则内子能力）：收集绑定群内**未被任何规则消费**且非监听账号
+ * 自身发送的消息，每天定时由 WF4（Dify）总结成当日纪要，连同文档类文件推送壹匣
  * `POST /api/v1/chatlog/ingest` 写入 WeKnora 知识库（壹匣侧落 `/{yyyy}/{M.d}/` 文件夹，同名先删后传）。
  *
- * 收集口径（消费 = 不进兜底）：@监听账号的一切消息、捕获/更正/撤回处理的消息、
- * 图片/视频/语音消息、监听账号自身消息、系统/撤回事件、私聊、非绑定群；
- * 文档类文件消息即使被 fileStore 缓存了下载参数（供群内提问引用）也照样进归档清单。
+ * 收集口径（消费 = 不进兜底，消费判定见 messageHandler.dispatchRules）：@监听账号的一切消息
+ * （指令/提问，未启用提问也静默算消费）、树障/交跨捕获、更正、撤回处理、图片/视频/语音媒体
+ * 备查；「交跨闸命中但未配交跨 Key 被忽略」也算消费（记日志不进兜底）；文档类文件消息即使被
+ * fileStore 缓存下载参数（供群内提问引用）也算未消费，照样登记留痕，白名单外类型打
+ * unsupported 标记（仅纪要尾部「未归档」组留痕，不上传）；监听账号自身发送内容（含已记录/
+ * 已更正回执与 Call Me 回答 md）天然排除；系统消息/撤回事件不入网，私聊、非绑定群不收集。
+ * 扩展约定：新增规则 handler 需返回消费布尔，未消费消息才会进兜底归档。
  *
  * 存储：data/chatlog-sessions.json（顶层版本号 + days 数组），临时文件 + rename 原子写。
  * 失败口径：整组失败 attempts+1 保留（次日启动补跑存量），attempts ≥3 丢弃并 error 日志；
@@ -23,6 +27,16 @@ const { postIngestWithRetry } = require('./push');
 const DIGEST_MAX_MESSAGES = 400; // WF4 输入消息条数上限
 const DIGEST_MAX_CHARS = 20000; // WF4 输入总字符上限
 const DOC_MAX_BYTES = 30 * 1024 * 1024; // 单文档归档上限（契约 ≤30MB）
+
+// WeKnora 可入库的文档扩展名白名单（小写不含点，与壹匣 callme 的 ATTACHMENT_EXTS 对齐）；
+// zip/rar/7z/dwg/ofd/音视频/图片/无扩展名不入库——消息仍留痕（纪要尾部「未归档」组 + unsupported 标记），只是不上传
+const SUPPORTED_DOC_EXTS = ['pdf', 'doc', 'docx', 'ppt', 'pptx', 'xlsx', 'xls', 'epub', 'mhtml', 'csv', 'md', 'markdown', 'txt', 'json', 'html'];
+const SUPPORTED_DOC_RE = new RegExp(`\\.(${SUPPORTED_DOC_EXTS.join('|')})$`, 'i');
+
+/** 文档名是否在可入库白名单内 */
+function isSupportedDocName(name) {
+  return SUPPORTED_DOC_RE.test(String(name || '').trim());
+}
 
 let state = null;
 
@@ -78,14 +92,16 @@ function ensureGroup(day, groupId, groupName) {
 }
 
 /**
- * 登记一条未被消费的文本消息（XML 形态内容、媒体/系统消息、监听账号自身消息不进兜底）。
+ * 登记一条未被消费的群文本消息（XML 形态内容、媒体类消息、监听账号自身消息不登记）。
+ * 引用消息由调用方把可见文字（app.title）传入 content。
  */
 function collectMessage({ conversationId, groupName, msg, senderId, senderName, content }) {
   const { wechat } = getSettings();
   const botWxid = (wechat.botWxid || '').trim();
   if (msg.direction === 'outgoing') return;
   if (botWxid && senderId === botWxid) return;
-  if (String(msg.kind || 'text') !== 'text') return;
+  const kind = String(msg.kind || 'text');
+  if (!['text', 'quote', 'app'].includes(kind)) return; // 图片/语音/视频/文件等媒体类不在这里登记（文件走 collectDocument）
   const text = String(content || '').trim();
   if (!text || text.startsWith('<')) return;
   const day = ensureDay(beijingToday());
@@ -100,7 +116,9 @@ function collectMessage({ conversationId, groupName, msg, senderId, senderName, 
 }
 
 /**
- * 登记一条未被消费的文档类文件消息（fileStore 参数缓存不算业务消费，照样归档）。
+ * 登记一条未被消费的群文档类文件消息（fileStore 参数缓存不算消费，照样登记留痕；
+ * 白名单外类型打 unsupported 标记，仅纪要尾部「未归档」组留痕不上传）。
+ * 白名单外类型记 unsupported 标记：不进上传清单，仅在纪要尾部「未归档」组留痕，防反复重推。
  * 同一天同群按消息 svr_id 去重——同群多规则分流时只登记一次。
  */
 function collectDocument(conversationId, groupName, mediaEntry, msg, senderId, senderName) {
@@ -108,12 +126,14 @@ function collectDocument(conversationId, groupName, mediaEntry, msg, senderId, s
   const entry = ensureGroup(day, conversationId, groupName);
   const ref = String((mediaEntry && mediaEntry.svrId) || '');
   if (ref && entry.documents.some((item) => item.ref === ref)) return;
+  const name = String((mediaEntry && mediaEntry.fileName) || '未命名文件');
   entry.documents.push({
     time: Number(msg.created_at) || Math.floor(Date.now() / 1000),
     senderId: senderId || '',
     senderName: senderName || senderId || '',
-    name: String((mediaEntry && mediaEntry.fileName) || '未命名文件'),
+    name,
     ref,
+    unsupported: !isSupportedDocName(name),
   });
   persist();
 }
@@ -164,7 +184,7 @@ function extractSummary(result) {
   throw new Error('WF4 未返回 summary');
 }
 
-/** 推送一条聊天归档（kind=digest / file），复用 push 层超时重试口径；业务 ok:false 视为失败 */
+/** 推送一条聊天归档（kind=digest / file），复用 push 层超时重试口径；业务 ok:false 视为失败（unsupported_file 打标记） */
 async function postChatlogIngest(body) {
   if (!config.yixia.baseUrl || !config.yixia.token) throw new Error('未配置壹匣推送');
   const data = await postIngestWithRetry(
@@ -172,7 +192,11 @@ async function postChatlogIngest(body) {
     body,
     { logPrefix: '[聊天归档]' },
   );
-  if (data && data.ok === false) throw new Error(`壹匣返回失败：${data.code || '-'} ${data.message || ''}`);
+  if (data && data.ok === false) {
+    const err = new Error(`壹匣返回失败：${data.code || '-'} ${data.message || ''}`);
+    if (data.code === 'unsupported_file') err.unsupportedFile = true;
+    throw err;
+  }
   return data;
 }
 
@@ -186,7 +210,12 @@ async function archiveGroupDay(day, groupId, entry, rule) {
   const digestInput = buildDigestInput(entry.messages);
   const result = await runWorkflow(rule.digestApiKey, { date, group: groupName, messages: digestInput });
   const summary = extractSummary(result);
-  const docList = entry.documents.map((doc) => doc.name).join('、') || '无';
+  const archivedDocs = entry.documents.filter((doc) => !doc.unsupported);
+  const skippedDocs = entry.documents.filter((doc) => doc.unsupported);
+  const docTail = `原始消息 ${entry.messages.length} 条 / 归档文档 ${archivedDocs.length} 个：${archivedDocs.map((doc) => doc.name).join('、') || '无'}`
+    + (skippedDocs.length
+      ? ` / 未归档文档 ${skippedDocs.length} 个（类型不支持入库）：${skippedDocs.map((doc) => doc.name).join('、')}`
+      : '');
   const digestMd = [
     `# ${groupName} ${date} 聊天纪要`,
     '',
@@ -194,13 +223,14 @@ async function archiveGroupDay(day, groupId, entry, rule) {
     '',
     '---',
     '',
-    `原始消息 ${entry.messages.length} 条 / 归档文档 ${entry.documents.length} 个：${docList}`,
+    docTail,
     '',
   ].join('\n');
   // 纪要先行（壹匣侧同名先删后传，重跑幂等）
   await postChatlogIngest({ date, group_name: groupName, kind: 'digest', digest_md: digestMd });
   console.log(`[聊天归档] ${groupName} ${date} 纪要已推送知识库（原始消息 ${entry.messages.length} 条）`);
   for (const doc of entry.documents) {
+    if (doc.unsupported) continue; // 类型不支持入库（或已被壹匣 unsupported_file 拒收标记）：终态，不再重推
     try {
       const media = doc.ref ? fileStore.getMedia(doc.ref) : null;
       if (!media || media.kind !== 'file') {
@@ -226,6 +256,13 @@ async function archiveGroupDay(day, groupId, entry, rule) {
       });
       console.log(`[聊天归档] 文档已推送知识库：${doc.name}（${buffer.length} 字节）`);
     } catch (err) {
+      if (err && err.unsupportedFile) {
+        // 壹匣以 unsupported_file 拒收：该文件视为终态，移入「未归档」记录（落盘标记防反复重推），整批不算失败
+        doc.unsupported = true;
+        persist();
+        console.warn(`[聊天归档] 文档被壹匣拒收（unsupported_file），移入未归档记录：${doc.name}`);
+        continue;
+      }
       if (err && err.code === 'file_too_large') {
         console.warn(`[聊天归档] 文档超过下载上限，跳过归档：${doc.name}（${err.message}）`);
         continue;
@@ -309,6 +346,7 @@ module.exports = {
   collectMessage,
   collectDocument,
   buildDigestInput,
+  isSupportedDocName,
   runDailyDigests,
   runStaleDigests,
 };
