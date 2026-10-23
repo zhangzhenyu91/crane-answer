@@ -19,7 +19,8 @@ const config = require('../config');
 const { getSettings } = require('../settings');
 
 const CACHE_TTL_SEC = 3 * 24 * 3600; // 未挂接记录的缓存条目保留时长
-const DOWNLOAD_TIMEOUT_MS = 20000;
+// 单次下载超时按 10M 级大原图究极保底：云端网关解密 + base64 回传在慢链路上耗时可观，20s 极易 abort
+const DOWNLOAD_TIMEOUT_MS = 180000;
 const DOWNLOAD_RETRIES = 2; // 失败重试次数（共 3 次尝试）
 const DOWNLOAD_RETRY_DELAY_MS = 3000;
 

@@ -178,6 +178,8 @@ function addRecord(session, record) {
     msgId: record.msgId || '',
     senderId: record.senderId || '',
     senderName: record.senderName || '',
+    coSenderId: record.coSenderId || '', // 协作供图人（引用他人图片报送/为他人记录补图时记录；发现人展示「记录者 供图者」，上限两人）
+    coSenderName: record.coSenderName || '',
     content: record.content || '',
     capturedAt: record.capturedAt || Math.floor(Date.now() / 1000),
     extracted: record.extracted || {},

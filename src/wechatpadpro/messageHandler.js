@@ -148,6 +148,12 @@ async function handleRecall(msg, group, conversationId) {
       const photo = found && store.removePhoto(found.record, recalledImage.svrId);
       imageStore.removeImage(recalledImage.svrId);
       if (found) {
+        // 协作供图人的照片被摘光时协作人同步失效（发现人恢复为记录者单人，随本次重推生效）
+        if (found.record.coSenderId
+          && !(found.record.photos || []).some((item) => item.senderId === found.record.coSenderId)) {
+          found.record.coSenderId = '';
+          found.record.coSenderName = '';
+        }
         store.saveSession(found.session);
         // 辅证变更实时重推该条（evidence_photos 为当前剩余照片，清空即清除壹匣辅证）；失败静默落库待重扫
         pushRecord(found.session, found.record)
@@ -452,6 +458,11 @@ async function captureRecord(rule, group, session, msg, senderId, content, photo
               bytes: got.bytes,
             });
             imageStore.attachToRecord(photoSvrId, record.id);
+            // 多人配合：被引用图片的发送者≠记录者时记为协作供图人（发现人展示「记录者 供图者」，上限两人）
+            if (cached.senderId && cached.senderId !== senderId && !record.coSenderId) {
+              record.coSenderId = cached.senderId;
+              record.coSenderName = await resolveDisplayName(session.groupId, cached.senderId);
+            }
             store.saveSession(session);
           } catch (photoErr) {
             photoNote = '，但辅证照片下载失败';
@@ -544,6 +555,11 @@ async function handleImageMessage(rule, group, session, msg, senderId, content) 
       bytes: got.bytes,
     });
     imageStore.attachToRecord(entry.svrId, record.id);
+    // 多人配合：为他人记录补挂辅证时，补图者记为协作供图人（已有协作人则不再追加）
+    if (senderId && senderId !== record.senderId && !record.coSenderId) {
+      record.coSenderId = senderId;
+      record.coSenderName = await resolveDisplayName(session.groupId, senderId);
+    }
     store.saveSession(session);
     console.log(`[树木排查] 辅证照片已挂接：记录 ${record.id}（图片 ${entry.svrId}，${got.bytes} 字节）`);
     sendQuote(session.groupId, '已添加辅证照片', msg)

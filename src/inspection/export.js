@@ -64,6 +64,18 @@ function resolveFinderName(senderId, fallback) {
   return override ? override.name : (fallback || senderId || '');
 }
 
+/**
+ * 发现人展示名：记录者在前；存在协作供图人（coSenderId，引用他人图片报送/为他人记录补图）时
+ * 拼接在后，单空格分隔（多人配合，上限两人）。alias 覆盖对两人各自生效。
+ */
+function resolveFinderNames(record) {
+  const base = resolveFinderName(record.senderId, record.senderName);
+  const coId = String((record && record.coSenderId) || '');
+  if (!coId || coId === record.senderId) return base;
+  const coName = resolveFinderName(coId, record.coSenderName);
+  return coName ? `${base} ${coName}` : base;
+}
+
 function poleNumber(record) {
   const ex = record.extracted || {};
   const from = Number(ex.pole_from);
@@ -103,7 +115,7 @@ function buildRow(record, seq) {
     text(ex.diameter).trim(),
     text(ex.horizontal).trim(),
     formatVertical(record),
-    resolveFinderName(record.senderId, record.senderName),
+    resolveFinderNames(record),
     formatFindDate(record.capturedAt),
   ];
 }
@@ -148,4 +160,5 @@ module.exports = {
   formatVertical,
   formatSideDistance,
   resolveFinderName,
+  resolveFinderNames,
 };

@@ -64,12 +64,13 @@ Docker 部署见 `Dockerfile` 与 `docker/docker-compose.yml`，数据持久化�
 
 - **引用图片发记录文字**：先往群里发照片，再**引用这张照片**发送报送文字。引用消息 `kind=app` 且 `app.category='quote'`，`app.reference.msg_type=3` 表明被引用者是图片（refermsg XML 兜底取 `<type>3</type>`），据此与「引用记录发文字 → 更正」分流。命中后文字走正常两层漏斗捕获，Dify 确认是树障后再下载被引用图片挂为该记录的辅证照片（判定非树障或初筛不过则不下载）。
 - **引用记录发图片**：**引用一条已捕获的报送消息**发送照片（图片消息自身 `source`/`go_fields.Content` 的 refermsg 块携带被引用记录 svr_id）。命中记录即下载挂接并反馈「已添加辅证照片」，同一记录可挂多张；记录仍在提取中的等提取完成后挂接。图片消息无更正文本可言，**永不进更正工作流**（与更正的识别据此严格区分）。
+- **多人配合记录**：报送文字引用的图片由他人所发（或为他人记录补挂辅证）时，该图片发送者记为协作供图人，发现人展示为「记录者 供图者」两人（单空格分隔，上限两人，alias 覆盖各自生效；其照片被撤回摘除后协作人同步失效）。
 - **裸发图片**（不引用任何消息）：仅按 `svr_id` 缓存 CDN 下载参数备查（`data/image-cache.json` 持久化，重启不丢），不下载本体、不做反馈。
 
 实现要点（2026-10-20 实测确认）：
 
 - 图片消息（`kind=image`/`type=3`）的 `image.cdn_download_contexts[]` 自带 CDN 下载参数（`file_no` + `file_aes_key`，`variant=standard` 为原图）；**引用报文不含这些参数**，只能靠 `app.reference.svr_id` 关联 → 图片到达时按 `svr_id` 缓存参数，被引用时查表下载。
-- 下载走云端网关 `POST {apiBase}/v1/Tools/CdnDownloadImage`（`X-Cloud-Access-Token` 鉴权，**参数必须小写** `file_no`/`file_aes_key`），返回 `Data.Image` 为服务端已解密的完整原图 base64；失败按 3 秒间隔重试 2 次，魔数校验 JPEG/PNG 后存 `data/attachments/evi-<svrId>.<jpg|png>`。（`GetMsgBigImg`/`DownloadImg` 等旧接口已实测不可用，勿回退。）
+- 下载走云端网关 `POST {apiBase}/v1/Tools/CdnDownloadImage`（`X-Cloud-Access-Token` 鉴权，**参数必须小写** `file_no`/`file_aes_key`），返回 `Data.Image` 为服务端已解密的完整原图 base64；单次超时 180 秒（10M 级大原图经网关解密回传的究极保底），失败按 3 秒间隔重试 2 次，魔数校验 JPEG/PNG 后存 `data/attachments/evi-<svrId>.<jpg|png>`。（`GetMsgBigImg`/`DownloadImg` 等旧接口已实测不可用，勿回退。）
 - 缓存条目未挂接记录时 3 天过期清理；挂接后随记录存续，记录被撤回/删除时连带清除（含本地文件）。
 - 管理页「排查记录 → 日桶 → 记录明细」新增「辅证」列展示缩略图（点击看原图，经 `/api/inspection/attachments/:name` 鉴权读取，文件名白名单防穿越）。
 - 报送壹匣时照片随记录上送（`records[i].evidence_photos`，base64 dataURL，见《报送壹匣》接口契约），壹匣侧写入自家 COS 作为辅证照片（kind=evidence）。

@@ -754,7 +754,7 @@
         : '-';
       return '<tr>' +
         '<td class="cell-sub">' + fmtTime(rec.capturedAt) + '</td>' +
-        '<td>' + esc(rec.senderName || rec.senderId || '-') + '</td>' +
+        '<td>' + esc((rec.senderName || rec.senderId || '-') + (rec.coSenderId ? ' ' + (rec.coSenderName || rec.coSenderId) : '')) + '</td>' +
         '<td><div class="cell-main" style="max-width:260px;white-space:normal">' + esc(rec.content) + '</div></td>' +
         '<td>' + lineCell + '</td>' +
         '<td>' + esc(recSection(ex)) + '</td>' +

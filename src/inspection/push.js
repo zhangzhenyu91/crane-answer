@@ -8,7 +8,7 @@ const {
   formatSection,
   formatVertical,
   formatSideDistance,
-  resolveFinderName,
+  resolveFinderNames,
 } = require('./export');
 
 const PUSH_TIMEOUT_MS = 60000; // 辅证照片随记录上送、壹匣侧入 COS 耗时，超时放宽到 60s
@@ -93,7 +93,7 @@ function buildRecordPayload(record) {
     diameter: text(ex.diameter),
     horizontal: text(ex.horizontal),
     vertical: formatVertical(record),
-    finder_name: resolveFinderName(record.senderId, record.senderName),
+    finder_name: resolveFinderNames(record),
     found_at: formatFoundAt(record.capturedAt),
     evidence_photos: buildEvidencePhotos(record),
   };
