@@ -252,7 +252,14 @@ function unescapeXml(text) {
 }
 
 function parseReferXml(raw) {
-  const block = String(raw || '').match(/<refermsg>([\s\S]*?)<\/refermsg>/);
+  // 兼容实体转义形态（&lt;refermsg&gt;，群消息 source 常见双重转义）：先反转义再匹配，最多两轮
+  let text = String(raw || '');
+  for (let i = 0; i < 2 && !/<refermsg[\s>]/.test(text); i += 1) {
+    const unescaped = unescapeXml(text);
+    if (unescaped === text) break;
+    text = unescaped;
+  }
+  const block = text.match(/<refermsg[^>]*>([\s\S]*?)<\/refermsg>/);
   if (!block) return null;
   const body = block[1];
   const pick = (tag) => {
@@ -265,6 +272,7 @@ function parseReferXml(raw) {
     content: pick('content'),
     fromusr: pick('fromusr'),
     chatusr: pick('chatusr'),
+    createtime: pick('createtime'), // 「引用记录发图片」extcommoninfo 简形仅有 svrid/signature/createtime，作记录定位兜底
   };
 }
 
@@ -274,12 +282,69 @@ function quoteTitle(content) {
 }
 
 /**
+ * refermsg 块候选源收集：一级源为已知字符串字段；兜底深扫 msg 全部字符串值
+ * （限深、限长，跳过 reply_context 自身回显子树，README 已明示不可用于引用判定），
+ * 兼容结构化 refermsg 对象（key 形如 refermsg/refer_msg 且值含 svrid/createtime）。
+ * 返回首个带非空 svrid 的 parseReferXml 结果 | null。
+ */
+function findReferSource(msg, content) {
+  const direct = [
+    content,
+    msg.content,
+    msg.raw,
+    msg.msg_source,
+    msg.source,
+    msg.go_fields && (msg.go_fields.Content || msg.go_fields.content),
+    msg.GoFields && (msg.GoFields.Content || msg.GoFields.content),
+  ];
+  for (const item of direct) {
+    if (typeof item !== 'string' || !item.trim()) continue;
+    const refer = parseReferXml(item);
+    if (refer && refer.svrid) return refer;
+  }
+  // 结构化/深扫兜底：报文字段形态未知时逐层遍历，字符串值过 parseReferXml、refermsg 形对象直接组装
+  const found = { value: null };
+  const walk = (node, depth) => {
+    if (found.value || depth > 6 || node == null) return;
+    if (typeof node === 'string') {
+      if (node.length > 65536 || !/refermsg|refer_msg/i.test(node)) return;
+      const refer = parseReferXml(node);
+      if (refer && refer.svrid) found.value = refer;
+      return;
+    }
+    if (typeof node !== 'object') return;
+    for (const [key, value] of Object.entries(node)) {
+      if (found.value) return;
+      if (key === 'reply_context') continue;
+      if (/^refer_?msg$/i.test(key) && value && typeof value === 'object') {
+        const svrid = String(value.svrid || value.svr_id || value.new_msg_id || '').trim();
+        if (svrid) {
+          found.value = {
+            svrid,
+            type: String(value.type != null ? value.type : ''),
+            content: String(value.content || ''),
+            fromusr: String(value.fromusr || value.from_user_name || ''),
+            chatusr: String(value.chatusr || value.chat_user_name || ''),
+            createtime: String(value.createtime || value.create_time || ''),
+          };
+          return;
+        }
+      }
+      walk(value, depth + 1);
+    }
+  };
+  walk(msg, 0);
+  return found.value;
+}
+
+/**
  * 引用消息识别：真实推送中引用消息为 kind=app 且 app.category='quote'，
  * app.reference 携带被引用消息的 svr_id/new_msg_id/content/display_name/msg_type（msg_type=3 表示被引用者是图片）。
  * 注意：reply_context 是普通消息的自身回显（svr_id 指向自己），不能用于引用判定。
- * 兜底解析 content/raw 中的 appmsg type=57 XML（refermsg 块）；
- * 「引用记录发图片」的图片消息（kind=image）不带 app 结构，引用信息在其 source/go_fields.Content 的 refermsg 块中。
- * 返回 { svrid, content, text, msgType } | null，text 为引用者新发的内容，msgType 为被引用消息类型（可空）。
+ * 兜底解析 refermsg 块（appmsg type=57 XML；「引用记录发图片」的图片消息（kind=image）不带 app 结构，
+ * 引用信息在图片 XML 自身 extcommoninfo 的 refermsg 简形中，仅 svrid/signature/createtime），
+ * 候选源经 findReferSource 一级字段 + 深扫收集，兼容 XML 实体转义形态。
+ * 返回 { svrid, content, text, msgType, createtime } | null，text 为引用者新发的内容，msgType 为被引用消息类型（可空）。
  */
 function extractQuote(msg, content) {
   const app = msg.app;
@@ -290,22 +355,17 @@ function extractQuote(msg, content) {
       content: String(ref.content || ''),
       text: String(app.title || content || '').trim(),
       msgType: ref.msg_type != null ? Number(ref.msg_type) : null,
+      createtime: String(ref.createtime || ref.create_time || ''),
     };
   }
-  const rawText = [
-    msg.raw,
-    msg.msg_source,
-    msg.source,
-    msg.go_fields && msg.go_fields.Content,
-    content,
-  ].filter((v) => typeof v === 'string').join('\n');
-  const refer = parseReferXml(rawText);
+  const refer = findReferSource(msg, content);
   if (refer && (refer.svrid || refer.content)) {
     return {
       svrid: refer.svrid,
       content: refer.content,
       text: quoteTitle(content),
       msgType: refer.type ? Number(refer.type) : null,
+      createtime: refer.createtime || '',
     };
   }
   return null;
@@ -639,10 +699,36 @@ async function handleImageMessage(rule, group, session, msg, senderId, content) 
   const quote = extractQuote(msg, content);
   if (!quote || !quote.svrid) {
     if (entry) console.log(`[树木排查] 缓存群图片 ${entry.svrId}（${session.groupName}，发送者=${senderId}），待引用挂接`);
+    // 诊断：报文含 refer 特征却解析不出引用时 dump 原始报文，便于对齐真实字段形态
+    const serialized = JSON.stringify(msg) || '';
+    if (/refermsg|refer_msg|extcommoninfo/i.test(serialized)) {
+      const dump = {
+        kind: msg.kind,
+        svr_id: msg.svr_id,
+        new_msg_id: msg.new_msg_id,
+        msg_id: msg.msg_id,
+        content: msg.content,
+        raw: msg.raw,
+        msg_source: msg.msg_source,
+        source: msg.source,
+        go_fields: msg.go_fields,
+      };
+      console.warn(`[树木排查] 图片报文含引用特征但未解析出 refermsg，原始报文：${JSON.stringify(dump).slice(0, 4000)}`);
+    }
     return;
   }
+  // 记录定位：svrid（引用 svr_id）优先 → 引用原文兜底 → createtime 兜底
+  // （extcommoninfo 简形无 content 标签，svr_id/new_msg_id 口径不一致时按被引用消息创建时间 ±2s 定位）
   let record = store.findRecordByMsgId(session, quote.svrid);
   if (!record) record = store.findRecordByContent(session, quote.content);
+  if (!record && quote.createtime) {
+    const quotedAt = Number(quote.createtime);
+    if (Number.isFinite(quotedAt) && quotedAt > 0) {
+      const candidates = session.records.filter((item) => Math.abs(Number(item.capturedAt || 0) - quotedAt) <= 2);
+      record = candidates.length ? candidates[candidates.length - 1] : null;
+      if (record) console.log(`[树木排查] 图片引用按 createtime 兜底定位到记录 ${record.id}（svrid=${quote.svrid} 未命中 msgId）`);
+    }
+  }
   if (!record) {
     console.log(`[树木排查] 图片引用的消息未命中当日记录（svrid=${quote.svrid}），仅缓存不挂接`);
     return;
@@ -1099,4 +1185,4 @@ function handleMessage(msg) {
     .catch((err) => console.error(`[聊天归档] 兜底收集异常：${err.stack || err}`));
 }
 
-module.exports = { handleMessage, hasPendingCapture };
+module.exports = { handleMessage, hasPendingCapture, extractQuote };
